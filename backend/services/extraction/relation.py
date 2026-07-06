@@ -18,12 +18,16 @@ logger = logging.getLogger(__name__)
 
 
 def format_relation_types_desc(schema: Dict) -> str:
-    """格式化关系类型描述"""
+    """格式化关系类型描述（支持多 domain/range 约束）"""
+    from services.schema_utils import format_constraint
+
     lines = []
     for rt in schema.get("relation_types", []):
         line = f"- **{rt['name']}**: {rt.get('definition', '无定义')}"
-        if rt.get("source_entity_type"):
-            line += f"（{rt['source_entity_type']} → {rt.get('target_entity_type', '*')}）"
+        src_desc = format_constraint(rt.get("source_entity_type"))
+        tgt_desc = format_constraint(rt.get("target_entity_type"))
+        if src_desc != "*" or tgt_desc != "*":
+            line += f"（{src_desc} → {tgt_desc}）"
         if rt.get("examples"):
             line += f"  示例: {', '.join(rt['examples'])}"
         lines.append(line)

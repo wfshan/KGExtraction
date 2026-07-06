@@ -4,9 +4,11 @@
 1. 实体类型必须在 Schema 中（或系统保留类型）
 2. 关系类型必须在 Schema 中（或系统保留类型）
 3. 边的 source/target 必须指向存在的节点（无悬挂边）
-4. 关系两端实体类型必须满足 Schema 的 source/target 约束
+4. 关系两端实体类型必须满足 Schema 的 source/target 约束（支持多类型约束）
 5. 重复边检测（同 source/target/relation 仅保留一条）
-6. 可选：关系必须具备至少一条证据短句（publish_gate_require_evidence）
+6. 可选：关系必须具备至少一条**已验证**证据短句（publish_gate_require_evidence）。
+   证据的 verified 标记由抽取时的确定性原文匹配产生——门控裁决的是
+   「证据真的在原文里」，而不只是「有证据字段」。
 
 返回结构化报告：哪些节点/边通过、哪些被拒绝及原因。
 """
@@ -16,6 +18,13 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Set, Tuple
 
 from models.graph import GraphData, Node, Edge
+from services.schema_utils import (
+    relation_source_types,
+    relation_target_types,
+    type_satisfies,
+    format_constraint,
+)
+from services.evidence import has_verified_evidence
 
 # 与 graph_store 中的保留类型保持一致
 RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "未分类实体", "未知类型"}
@@ -115,27 +124,27 @@ def validate_for_publish(
             ))
             continue
 
-        # 关系两端类型约束（保留关系类型不做类型约束）
+        # 关系两端类型约束（保留关系类型不做类型约束；支持多类型约束）
         if edge.relation_type in relation_defs:
             rt_def = relation_defs[edge.relation_type]
             s_node = node_by_id.get(edge.source_id)
             t_node = node_by_id.get(edge.target_id)
-            src_constraint = rt_def.get("source_entity_type")
-            tgt_constraint = rt_def.get("target_entity_type")
-            if src_constraint and s_node and s_node.entity_type != src_constraint:
+            src_constraint = relation_source_types(rt_def)
+            tgt_constraint = relation_target_types(rt_def)
+            if s_node and not type_satisfies(s_node.entity_type, src_constraint):
                 report.violations.append(ValidationViolation(
                     kind="edge",
                     target_id=edge.id,
                     rule="source_type_mismatch",
-                    message=f"关系「{edge.relation_type}」要求源类型为「{src_constraint}」，实际为「{s_node.entity_type}」",
+                    message=f"关系「{edge.relation_type}」要求源类型为「{format_constraint(rt_def.get('source_entity_type'))}」，实际为「{s_node.entity_type}」",
                 ))
                 continue
-            if tgt_constraint and t_node and t_node.entity_type != tgt_constraint:
+            if t_node and not type_satisfies(t_node.entity_type, tgt_constraint):
                 report.violations.append(ValidationViolation(
                     kind="edge",
                     target_id=edge.id,
                     rule="target_type_mismatch",
-                    message=f"关系「{edge.relation_type}」要求目标类型为「{tgt_constraint}」，实际为「{t_node.entity_type}」",
+                    message=f"关系「{edge.relation_type}」要求目标类型为「{format_constraint(rt_def.get('target_entity_type'))}」，实际为「{t_node.entity_type}」",
                 ))
                 continue
 
@@ -151,10 +160,21 @@ def validate_for_publish(
             continue
         seen_edge_keys.add(edge_key)
 
-        # 可选：证据要求（保留关系类型如「下一段」豁免）
+        # 可选：证据要求（保留关系类型如「下一段」豁免）。
+        # 有证据短句时必须至少一条经确定性验证命中原文（verified 非 False）；
+        # 无证据短句时退回来源片段兜底（兼容未开启证据锚定的旧数据）。
         if require_evidence and edge.relation_type not in RESERVED_RELATION_TYPES:
-            has_ev = bool(getattr(edge, "evidence_quotes", None)) or bool(edge.source_chunk_ids)
-            if not has_ev:
+            quotes = getattr(edge, "evidence_quotes", None) or []
+            if quotes:
+                if not has_verified_evidence(quotes):
+                    report.violations.append(ValidationViolation(
+                        kind="edge",
+                        target_id=edge.id,
+                        rule="unverified_evidence",
+                        message=f"关系「{edge.relation_type}」的证据短句未能命中原文（疑似幻觉证据）",
+                    ))
+                    continue
+            elif not edge.source_chunk_ids:
                 report.violations.append(ValidationViolation(
                     kind="edge",
                     target_id=edge.id,

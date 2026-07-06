@@ -142,8 +142,9 @@ async def post_extraction_correction(project_id: str, batch_size: Optional[int] 
 
     # ---- 批量修正关系类型 ----
     if bad_relation_edges and relation_defs:
+        from services.schema_utils import format_constraint
         rel_type_desc = [
-            {"name": rt, "source": d.get("source_entity_type", ""), "target": d.get("target_entity_type", "")}
+            {"name": rt, "source": format_constraint(d.get("source_entity_type")), "target": format_constraint(d.get("target_entity_type"))}
             for rt, d in relation_defs.items()
         ]
         for i in range(0, len(bad_relation_edges), batch_size):

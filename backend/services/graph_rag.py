@@ -91,6 +91,46 @@ def _get_mode_profile(retrieval_mode: str) -> Dict[str, int]:
     return profiles.get(retrieval_mode, profiles["graph_flow"])
 
 
+_GLOBAL_QUERY_HINTS = ("整体", "总体", "全局", "主题", "概览", "总结", "讲了什么", "有哪些方面", "梳理", "overview")
+_MULTIHOP_QUERY_HINTS = ("之间", "关联", "关系链", "路径", "如何影响", "间接", "多跳", "传导")
+
+
+async def route_query(query: str, project_id: str) -> Dict[str, Any]:
+    """按查询特征 + 意图识别自动选择检索模式（GraphRAG-Bench 共识：无单一最优架构）。
+
+    路由规则：
+    - 全局/主题型问题且已构建社区摘要 → global
+    - 多跳关联/两个以上实体 → hippo（PPR 关联检索）
+    - 命中具体实体 → graph_flow（子图扩展）
+    - 未命中实体 → text_only（向量/关键词文本检索）
+    """
+    reason = ""
+    # 1. 全局型问题
+    if any(h in query for h in _GLOBAL_QUERY_HINTS):
+        from services.community import load_communities
+        if load_communities(project_id):
+            return {"mode": "global", "reason": "全局/主题型问题，使用社区摘要"}
+        reason = "全局型问题但未构建社区摘要，"
+
+    # 2. 意图识别：提到的实体与类型
+    intent = {}
+    try:
+        intent = await identify_intent_from_query(query, project_id)
+    except Exception as e:
+        logger.warning(f"[路由] 意图识别失败: {e}")
+    entities = intent.get("target_entities", []) or []
+    types = intent.get("target_types", []) or []
+
+    multihop = any(h in query for h in _MULTIHOP_QUERY_HINTS)
+    if len(entities) >= 2 and multihop:
+        return {"mode": "hippo", "reason": reason + f"多实体（{len(entities)}）多跳关联问题，使用 PPR 关联检索", "intent": intent}
+    if multihop and (entities or types):
+        return {"mode": "hippo", "reason": reason + "多跳关联问题，使用 PPR 关联检索", "intent": intent}
+    if entities or types:
+        return {"mode": "graph_flow", "reason": reason + "命中具体实体/类型，使用子图扩展", "intent": intent}
+    return {"mode": "text_only", "reason": reason + "未命中图谱实体，回退文本检索", "intent": intent}
+
+
 async def identify_intent_from_query(query: str, project_id: str) -> Dict[str, Any]:
     """
     结合图谱 Schema 进行意图识别，识别用户提到的实体名称或实体类型。
@@ -729,10 +769,23 @@ async def stream_chat_rag(
     max_start_entities: int = 5,
     retrieval_mode: str = "graph_flow"
 ):
-    """进行 RAG 问答，并流式返回结果；支持可配置的检索深度与起点实体数。"""
+    """进行 RAG 问答，并流式返回结果；支持可配置的检索深度与起点实体数。
+
+    retrieval_mode="auto"（默认推荐）时按查询特征自动路由到合适的检索模式。
+    """
     # 1. 保存用户的提问到历史
     await add_message(project_id, "user", query)
-    
+
+    # 1.5 自动路由
+    if retrieval_mode == "auto":
+        try:
+            routing = await route_query(query, project_id)
+            retrieval_mode = routing.get("mode", "graph_flow")
+            yield f"【智能路由 → {retrieval_mode}：{routing.get('reason', '')}】\n\n"
+        except Exception as e:
+            logger.warning(f"[路由] 自动路由失败，回退 graph_flow: {e}")
+            retrieval_mode = "graph_flow"
+
     # 2. 构建 Prompt（按配置的检索深度与起点实体数）
     if retrieval_mode != "direct":
         yield f"【正在使用 {retrieval_mode} 模式检索关联信息...】\n\n"

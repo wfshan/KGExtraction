@@ -13,7 +13,7 @@ router = APIRouter()
 
 class GraphRAGOptions(BaseModel):
     """问图检索配置：检索方式、检索深度（度）与起点实体数量上限"""
-    retrieval_mode: Optional[str] = Field(default="graph_flow", description="检索模式: graph_flow, graph_full, graph_path, hippo, global, text_only, direct")
+    retrieval_mode: Optional[str] = Field(default="auto", description="检索模式: auto(按查询自动路由), graph_flow, graph_full, graph_path, hippo, global, text_only, direct")
     max_degree: Optional[int] = Field(default=2, ge=1, le=5, description="检索深度，如 1/2/3 度展开")
     max_start_entities: Optional[int] = Field(default=5, ge=1, le=100, description="起点实体数量上限")
 

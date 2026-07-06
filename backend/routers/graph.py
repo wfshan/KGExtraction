@@ -4,7 +4,7 @@
 import json
 import uuid
 from typing import Optional, Dict, Any, List
-from fastapi import APIRouter, HTTPException, UploadFile, File
+from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from models.graph import GraphData, Node, Edge
@@ -20,9 +20,17 @@ from services.graph_store import (
     _build_draft_nx_graph,
     sync_entity_index,
     get_publish_validation_report,
+    is_doc_layer_node,
+    is_doc_layer_edge,
 )
+from services.audit import record_audit, list_audit
 
 router = APIRouter()
+
+
+def _actor(request: Request) -> str:
+    """操作人标识：X-User 请求头，缺省为 anonymous（写入审计日志）。"""
+    return (request.headers.get("X-User") or "anonymous").strip()[:64] or "anonymous"
 
 
 # ===== 请求模型 =====
@@ -42,12 +50,19 @@ class EdgeUpdateRequest(BaseModel):
 
 
 @router.get("/{project_id}/graph")
-async def get_graph(project_id: str, status: str = "draft"):
-    """获取图谱数据"""
+async def get_graph(project_id: str, status: str = "draft", include_doc_layer: bool = True):
+    """获取图谱数据。include_doc_layer=false 时过滤文档结构层（片段锚点/「下一段」边）。"""
     if status == "published":
         graph = load_published_graph(project_id)
     else:
         graph = load_draft_graph(project_id)
+    if not include_doc_layer:
+        graph.nodes = [n for n in graph.nodes if not is_doc_layer_node(n.entity_type)]
+        kept_ids = {n.id for n in graph.nodes}
+        graph.edges = [
+            e for e in graph.edges
+            if not is_doc_layer_edge(e.relation_type) and e.source_id in kept_ids and e.target_id in kept_ids
+        ]
     return graph.model_dump()
 
 
@@ -58,10 +73,14 @@ async def validate_project_graph(project_id: str):
 
 
 @router.post("/{project_id}/graph/publish")
-async def publish_project_graph(project_id: str):
+async def publish_project_graph(project_id: str, request: Request):
     """发布图谱（审核通过）。启用门控时仅发布通过确定性校验的节点/边。"""
     try:
         graph = publish_graph(project_id)
+        record_audit(
+            project_id, _actor(request), "publish",
+            detail={"version": graph.version, "nodes": len(graph.nodes), "edges": len(graph.edges)},
+        )
         return {
             "message": "图谱已发布",
             "version": graph.version,
@@ -73,10 +92,57 @@ async def publish_project_graph(project_id: str):
 
 
 @router.post("/{project_id}/graph/reject")
-async def reject_project_graph(project_id: str):
+async def reject_project_graph(project_id: str, request: Request):
     """拒绝图谱（重置草稿）"""
+    draft = load_draft_graph(project_id)
     reject_graph(project_id)
+    record_audit(
+        project_id, _actor(request), "reject_draft",
+        detail={"discarded_nodes": len(draft.nodes), "discarded_edges": len(draft.edges)},
+    )
     return {"message": "图谱已拒绝，可重新配置后抽取"}
+
+
+# ===== 人工复核队列（增量 diff + 风险排序 + 逐项裁决 + 审计） =====
+
+class ReviewDecisionRequest(BaseModel):
+    kind: str            # node | edge
+    target_id: str
+    decision: str        # approve | reject
+    reason: str = ""
+
+
+@router.get("/{project_id}/graph/review/queue")
+async def get_review_queue(project_id: str, run_id: Optional[str] = None):
+    """复核队列：草稿相对已发布图的新增/变更项，按风险排序（违规 > 未验证证据 > 低置信）。"""
+    from services.review import build_review_queue
+    try:
+        return build_review_queue(project_id, run_id=run_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{project_id}/graph/review/decision")
+async def post_review_decision(project_id: str, req: ReviewDecisionRequest, request: Request):
+    """对复核项裁决：approve 标记通过，reject 从草稿删除（级联删边），全程留痕。"""
+    from services.review import decide_review
+    try:
+        return decide_review(project_id, req.kind, req.target_id, req.decision, _actor(request), req.reason)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{project_id}/graph/audit")
+async def get_audit_log(project_id: str, limit: int = 100, action: Optional[str] = None):
+    """审计日志：发布/驳回/增删改/复核裁决的完整留痕。"""
+    return {"logs": list_audit(project_id, limit=limit, action=action)}
+
+
+@router.get("/{project_id}/graph/rejected")
+async def get_rejected_items(project_id: str, run_id: Optional[str] = None, limit: int = 200):
+    """抽取阶段被规则校验拒绝的实体/关系（含原因），供审计与 Schema 缺口分析。"""
+    from services.rejected_store import list_rejected, rejected_stats
+    return {"stats": rejected_stats(project_id), "items": list_rejected(project_id, run_id=run_id, limit=limit)}
 
 
 @router.get("/{project_id}/graph/subgraph")
@@ -127,7 +193,7 @@ async def export_graph(project_id: str):
 # ===== 节点 CRUD =====
 
 @router.patch("/{project_id}/graph/nodes/{node_id}")
-async def update_node(project_id: str, node_id: str, req: NodeUpdateRequest):
+async def update_node(project_id: str, node_id: str, req: NodeUpdateRequest, request: Request):
     """
     更新节点属性。
     如果 name 发生变化，自动级联更新引用该节点的所有边的显示名称。
@@ -168,11 +234,14 @@ async def update_node(project_id: str, node_id: str, req: NodeUpdateRequest):
     except Exception:
         pass
 
+    record_audit(project_id, _actor(request), "node_update", target_kind="node", target_id=node_id,
+                 detail={"before": before_snapshot, "after": {"name": target_node.name, "entity_type": target_node.entity_type}})
+
     return {"message": "节点已更新", "node": target_node.model_dump()}
 
 
 @router.delete("/{project_id}/graph/nodes/{node_id}")
-async def delete_node(project_id: str, node_id: str):
+async def delete_node(project_id: str, node_id: str, request: Request):
     """
     删除节点，并自动清理所有引用该节点的边。
     """
@@ -201,6 +270,8 @@ async def delete_node(project_id: str, node_id: str):
                    if e.source_id != node_id and e.target_id != node_id]
 
     save_draft_graph(project_id, graph)
+    record_audit(project_id, _actor(request), "node_delete", target_kind="node", target_id=node_id,
+                 detail={"name": deleted_node.name if deleted_node else "", "removed_edges": len(removed_edges)})
     return {
         "message": "节点已删除",
         "removed_edges": removed_edges,
@@ -212,7 +283,7 @@ async def delete_node(project_id: str, node_id: str):
 # ===== 边 CRUD =====
 
 @router.patch("/{project_id}/graph/edges/{edge_id}")
-async def update_edge(project_id: str, edge_id: str, req: EdgeUpdateRequest):
+async def update_edge(project_id: str, edge_id: str, req: EdgeUpdateRequest, request: Request):
     """更新边属性"""
     graph = load_draft_graph(project_id)
 
@@ -244,11 +315,14 @@ async def update_edge(project_id: str, edge_id: str, req: EdgeUpdateRequest):
     except Exception:
         pass
 
+    record_audit(project_id, _actor(request), "edge_update", target_kind="edge", target_id=edge_id,
+                 detail={"before": before_rel, "after": {"relation_type": target_edge.relation_type}})
+
     return {"message": "关系已更新", "edge": target_edge.model_dump()}
 
 
 @router.delete("/{project_id}/graph/edges/{edge_id}")
-async def delete_edge(project_id: str, edge_id: str):
+async def delete_edge(project_id: str, edge_id: str, request: Request):
     """删除边"""
     graph = load_draft_graph(project_id)
 
@@ -267,6 +341,9 @@ async def delete_edge(project_id: str, edge_id: str):
                         {"relation_type": deleted_edge.relation_type})
     except Exception:
         pass
+
+    record_audit(project_id, _actor(request), "edge_delete", target_kind="edge", target_id=edge_id,
+                 detail={"relation_type": deleted_edge.relation_type if deleted_edge else ""})
 
     return {"message": "关系已删除", "remaining_edges": len(graph.edges)}
 

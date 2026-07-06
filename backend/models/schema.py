@@ -2,7 +2,7 @@
 Schema (本体) 数据模型
 定义图谱的实体类型和关系类型
 """
-from typing import List, Optional
+from typing import List, Optional, Union
 from pydantic import BaseModel, Field
 
 
@@ -15,11 +15,16 @@ class EntityType(BaseModel):
 
 
 class RelationType(BaseModel):
-    """关系类型定义"""
+    """关系类型定义
+
+    source/target 约束支持单类型（str）或多类型（List[str]），
+    空值表示不约束。现实本体中同一谓词常有多个合法 domain/range
+    （如「位于」适用于 公司→城市 与 人物→城市），无需复制关系类型。
+    """
     name: str = Field(..., description="关系类型名称，如：就职于、位于")
     definition: str = Field(default="", description="语义定义")
-    source_entity_type: str = Field(default="", description="源实体类型约束")
-    target_entity_type: str = Field(default="", description="目标实体类型约束")
+    source_entity_type: Union[str, List[str]] = Field(default="", description="源实体类型约束（str 或 List[str]，空=不约束）")
+    target_entity_type: Union[str, List[str]] = Field(default="", description="目标实体类型约束（str 或 List[str]，空=不约束）")
     examples: List[str] = Field(default_factory=list, description="示例关系列表")
 
 

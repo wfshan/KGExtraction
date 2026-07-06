@@ -44,6 +44,20 @@ def _update_run(project_id: str, run_id: str, **updates):
     _save_runs(project_id, runs)
 
 
+@router.get("/{project_id}/runs/estimate")
+async def estimate_run(project_id: str):
+    """启动前成本预估：按分片数 × 启用功能 × 平均 token 估算调用量与费用（确定性，不调用 LLM）。"""
+    from config import load_config
+    from services.extraction.graph import _load_all_chunks
+    from services.usage_tracker import estimate_run_cost
+
+    project_dir = get_project_dir(project_id)
+    total_chunks = len(_load_all_chunks(project_dir))
+    if total_chunks == 0:
+        raise HTTPException(status_code=400, detail="没有可处理的文档分片，请先上传并解析文档")
+    return estimate_run_cost(total_chunks, load_config())
+
+
 @router.post("/{project_id}/runs", response_model=Run)
 async def start_run(
     project_id: str,

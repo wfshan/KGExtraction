@@ -76,6 +76,14 @@ class SystemConfig(BaseModel):
     enable_community_on_publish: bool = Field(default=False, description="发布时自动构建社区摘要")
     community_max_summary_nodes: int = Field(default=30, description="社区摘要单社区参与 LLM 的最大节点数")
 
+    # ===== 成本控制 =====
+    run_token_budget: int = Field(default=0, description="单次抽取任务 token 预算上限（0=不限制，超限优雅停止）")
+    price_per_1k_input_tokens: float = Field(default=0.0, description="每 1k 输入 token 单价（用于成本预估展示，0=不展示费用）")
+    price_per_1k_output_tokens: float = Field(default=0.0, description="每 1k 输出 token 单价（用于成本预估展示）")
+
+    # ===== 跨片段推断 =====
+    cross_chunk_candidate_limit: int = Field(default=20, description="跨片段推断参与 prompt 的全局候选实体上限（按与当前片段相关性排序）")
+
 
 def load_config() -> SystemConfig:
     """加载系统配置，优先从文件读取，不存在则从环境变量初始化"""

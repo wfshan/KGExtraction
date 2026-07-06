@@ -14,7 +14,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 
-_nx_cache: Dict[str, nx.DiGraph] = {}
+_nx_cache: Dict[tuple, nx.DiGraph] = {}
 
 # 系统保留的实体/关系类型（不要求出现在用户 Schema 中）
 # - 未归类片段：未抽取出任何本体实体的文本片段的保底挂载节点
@@ -22,42 +22,68 @@ _nx_cache: Dict[str, nx.DiGraph] = {}
 RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "未分类实体", "未知类型"}
 RESERVED_RELATION_TYPES = {"下一段"}
 
-def get_nx_graph(project_id: str) -> nx.DiGraph:
-    """获取 networkx 格式的已发布图结构（带缓存）"""
-    if project_id in _nx_cache:
-        return _nx_cache[project_id]
-        
+# 文档结构层（语料层）类型：属于文本物理结构而非领域知识。
+# 图算法（子图扩展 / PPR / 社区检测）默认只在知识层上运行，
+# 避免语义无关的实体经由「下一段」链条连通、污染多跳推理。
+DOC_LAYER_ENTITY_TYPES = {"未归类片段", "文档片段"}
+DOC_LAYER_RELATION_TYPES = {"下一段"}
+
+
+def is_doc_layer_node(entity_type: str) -> bool:
+    return entity_type in DOC_LAYER_ENTITY_TYPES
+
+
+def is_doc_layer_edge(relation_type: str) -> bool:
+    return relation_type in DOC_LAYER_RELATION_TYPES
+
+
+def get_nx_graph(project_id: str, include_document_layer: bool = False) -> nx.DiGraph:
+    """获取 networkx 格式的已发布图结构（带缓存）。
+
+    默认只包含知识层；include_document_layer=True 时包含文档结构层
+    （片段锚点节点与「下一段」边），仅供可视化/结构检索使用。
+    """
+    cache_key = (project_id, include_document_layer)
+    if cache_key in _nx_cache:
+        return _nx_cache[cache_key]
+
     graph_data = load_published_graph(project_id)
-    
+
     G = nx.DiGraph()
     for node in graph_data.nodes:
+        if not include_document_layer and is_doc_layer_node(node.entity_type):
+            continue
         G.add_node(
-            node.id, 
-            name=node.name, 
-            entity_type=node.entity_type, 
+            node.id,
+            name=node.name,
+            entity_type=node.entity_type,
             source_chunk_ids=node.source_chunk_ids,
             evidence_quotes=node.evidence_quotes,
             properties=node.properties
         )
-        
+
     for edge in graph_data.edges:
+        if not include_document_layer and is_doc_layer_edge(edge.relation_type):
+            continue
+        if edge.source_id not in G.nodes or edge.target_id not in G.nodes:
+            continue
         G.add_edge(
-            edge.source_id, 
-            edge.target_id, 
+            edge.source_id,
+            edge.target_id,
             id=edge.id,
             relation_type=edge.relation_type,
             source_chunk_ids=edge.source_chunk_ids,
             evidence_quotes=edge.evidence_quotes,
             properties=edge.properties
         )
-        
-    _nx_cache[project_id] = G
+
+    _nx_cache[cache_key] = G
     return G
 
 def clear_nx_cache(project_id: str):
     """清除网络图缓存"""
-    if project_id in _nx_cache:
-        del _nx_cache[project_id]
+    for key in [k for k in _nx_cache if k[0] == project_id]:
+        del _nx_cache[key]
 
 def _db_path(project_id: str) -> Path:
     return get_project_dir(project_id) / "graph.db"
@@ -119,9 +145,11 @@ def init_db_sync(project_id: str):
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(entity_type)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_edges_type ON edges(relation_type)')
 
-    # 兼容旧库：补齐 evidence_quotes 列
+    # 兼容旧库：补齐 evidence_quotes / run_id 列
     _ensure_column(cursor, "nodes", "evidence_quotes", "TEXT")
     _ensure_column(cursor, "edges", "evidence_quotes", "TEXT")
+    _ensure_column(cursor, "nodes", "run_id", "TEXT DEFAULT ''")
+    _ensure_column(cursor, "edges", "run_id", "TEXT DEFAULT ''")
 
     conn.commit()
     conn.close()
@@ -138,6 +166,11 @@ async def init_db(project_id: str):
     """异步初始化数据库表"""
     init_db_sync(project_id) # Reuse synchronous logic for initial creation
 
+# 节点/边的标准列顺序（所有 SELECT 必须与 _parse_node/_parse_edge 保持一致）
+NODE_COLUMNS = "id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id"
+EDGE_COLUMNS = "id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id"
+
+
 def _parse_node(row) -> Node:
     return Node(
         id=row[0],
@@ -146,7 +179,8 @@ def _parse_node(row) -> Node:
         properties=json.loads(row[3]) if row[3] else {},
         source_chunk_ids=json.loads(row[4]) if row[4] else [],
         evidence_quotes=json.loads(row[5]) if len(row) > 5 and row[5] else [],
-        confidence=row[6] if len(row) > 6 else (row[5] if len(row) > 5 else 1.0),
+        confidence=row[6] if len(row) > 6 and row[6] is not None else 1.0,
+        run_id=row[7] if len(row) > 7 and row[7] else "",
     )
 
 def _parse_edge(row) -> Edge:
@@ -158,7 +192,8 @@ def _parse_edge(row) -> Edge:
         properties=json.loads(row[4]) if row[4] else {},
         source_chunk_ids=json.loads(row[5]) if row[5] else [],
         evidence_quotes=json.loads(row[6]) if len(row) > 6 and row[6] else [],
-        confidence=row[7] if len(row) > 7 else (row[6] if len(row) > 6 else 1.0),
+        confidence=row[7] if len(row) > 7 and row[7] is not None else 1.0,
+        run_id=row[8] if len(row) > 8 and row[8] else "",
     )
 
 def _load_graph_sync(project_id: str, status: str) -> GraphData:
@@ -166,13 +201,13 @@ def _load_graph_sync(project_id: str, status: str) -> GraphData:
     init_db_sync(project_id)
     conn = sqlite3.connect(str(_db_path(project_id)))
     cursor = conn.cursor()
-    
+
     # Load nodes
-    cursor.execute("SELECT id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence FROM nodes WHERE status = ?", (status,))
+    cursor.execute(f"SELECT {NODE_COLUMNS} FROM nodes WHERE status = ?", (status,))
     nodes = [_parse_node(row) for row in cursor.fetchall()]
-    
+
     # Load edges
-    cursor.execute("SELECT id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence FROM edges WHERE status = ?", (status,))
+    cursor.execute(f"SELECT {EDGE_COLUMNS} FROM edges WHERE status = ?", (status,))
     edges = [_parse_edge(row) for row in cursor.fetchall()]
     
     # Load version
@@ -214,16 +249,16 @@ def save_draft_graph(project_id: str, graph: GraphData):
         # 插入新的草稿节点
         for node in graph.nodes:
             cursor.execute('''
-                INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
-            ''', (node.id, node.name, node.entity_type, json.dumps(node.properties), json.dumps(node.source_chunk_ids), json.dumps(getattr(node, "evidence_quotes", [])), node.confidence))
-            
+                INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+            ''', (node.id, node.name, node.entity_type, json.dumps(node.properties), json.dumps(node.source_chunk_ids), json.dumps(getattr(node, "evidence_quotes", [])), node.confidence, getattr(node, "run_id", "")))
+
         # 插入新的草稿边
         for edge in graph.edges:
             cursor.execute('''
-                INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
-            ''', (edge.id, edge.source_id, edge.target_id, edge.relation_type, json.dumps(edge.properties), json.dumps(edge.source_chunk_ids), json.dumps(getattr(edge, "evidence_quotes", [])), edge.confidence))
+                INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+            ''', (edge.id, edge.source_id, edge.target_id, edge.relation_type, json.dumps(edge.properties), json.dumps(edge.source_chunk_ids), json.dumps(getattr(edge, "evidence_quotes", [])), edge.confidence, getattr(edge, "run_id", "")))
             
         # 更新 meta 信息
         cursor.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('updated_at', ?)", (datetime.now().isoformat(),))
@@ -321,13 +356,13 @@ def publish_graph(project_id: str) -> GraphData:
         if allowed_node_ids is None:
             # 门控关闭：全量复制（兼容旧路径）
             cursor.execute('''
-                INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                SELECT id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, 'published'
+                INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                SELECT id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, 'published'
                 FROM nodes WHERE status = 'draft'
             ''')
             cursor.execute('''
-                INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                SELECT id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, 'published'
+                INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                SELECT id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, 'published'
                 FROM edges WHERE status = 'draft'
                 AND source_id IN (SELECT id FROM nodes WHERE status = 'draft')
                 AND target_id IN (SELECT id FROM nodes WHERE status = 'draft')
@@ -338,18 +373,18 @@ def publish_graph(project_id: str) -> GraphData:
                 if node.id not in allowed_node_ids:
                     continue
                 cursor.execute('''
-                    INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, 'published')
+                    INSERT INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'published')
                 ''', (node.id, node.name, node.entity_type, json.dumps(node.properties),
-                      json.dumps(node.source_chunk_ids), json.dumps(node.evidence_quotes), node.confidence))
+                      json.dumps(node.source_chunk_ids), json.dumps(node.evidence_quotes), node.confidence, node.run_id))
             for edge in graph.edges:
                 if edge.id not in allowed_edge_ids:
                     continue
                 cursor.execute('''
-                    INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'published')
+                    INSERT INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'published')
                 ''', (edge.id, edge.source_id, edge.target_id, edge.relation_type, json.dumps(edge.properties),
-                      json.dumps(edge.source_chunk_ids), json.dumps(edge.evidence_quotes), edge.confidence))
+                      json.dumps(edge.source_chunk_ids), json.dumps(edge.evidence_quotes), edge.confidence, edge.run_id))
 
         cursor.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('version', ?)", (str(new_version),))
         updated_at = datetime.now().isoformat()
@@ -433,55 +468,123 @@ def validate_graph(graph: GraphData, project_id: str) -> List[str]:
 # ==========================================
 
 async def add_nodes_to_draft(project_id: str, nodes: List[Node]):
-    """向草稿图谱中添加节点 (异步单条插入并忽略重复主键)"""
+    """向草稿图谱中添加节点。
+
+    实体身份 = (name, entity_type)：同名同类型合并（累加 chunk 来源与证据），
+    同名不同类型是不同实体（「苹果/公司」≠「苹果/水果」），各自独立成节点。
+    """
     if not nodes:
         return
-        
+
     await init_db(project_id)
     async with aiosqlite.connect(str(_db_path(project_id))) as db:
         for node in nodes:
             node_evidence = getattr(node, "evidence_quotes", []) or []
-            # Check if exists by name in draft
-            async with db.execute("SELECT id, source_chunk_ids, evidence_quotes FROM nodes WHERE name = ? AND status = 'draft'", (node.name,)) as cursor:
+            async with db.execute(
+                "SELECT id, source_chunk_ids, evidence_quotes FROM nodes WHERE name = ? AND entity_type = ? AND status = 'draft'",
+                (node.name, node.entity_type),
+            ) as cursor:
                 row = await cursor.fetchone()
                 if row:
-                    # Update source_chunk_ids + 合并证据
+                    # 合并 chunk 来源与证据
                     existing_id = row[0]
                     existing_chunks = json.loads(row[1]) if row[1] else []
                     new_chunks = list(set(existing_chunks + node.source_chunk_ids))
                     existing_ev = json.loads(row[2]) if row[2] else []
                     merged_ev = _merge_evidence(existing_ev, node_evidence)
-                    await db.execute("UPDATE nodes SET source_chunk_ids = ?, evidence_quotes = ? WHERE id = ?", (json.dumps(new_chunks), json.dumps(merged_ev), existing_id))
+                    await db.execute(
+                        "UPDATE nodes SET source_chunk_ids = ?, evidence_quotes = ? WHERE id = ? AND status = 'draft'",
+                        (json.dumps(new_chunks), json.dumps(merged_ev), existing_id),
+                    )
                 else:
                     await db.execute('''
-                        INSERT OR IGNORE INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, 'draft')
-                    ''', (node.id, node.name, node.entity_type, json.dumps(node.properties), json.dumps(node.source_chunk_ids), json.dumps(node_evidence), node.confidence))
+                        INSERT OR IGNORE INTO nodes (id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+                    ''', (node.id, node.name, node.entity_type, json.dumps(node.properties), json.dumps(node.source_chunk_ids), json.dumps(node_evidence), node.confidence, node.run_id))
         await db.commit()
 
 async def add_edges_to_draft(project_id: str, edges: List[Edge]):
-    """向草稿图谱中添加边 (异步单条插入并忽略重复主键)"""
+    """向草稿图谱中添加边。
+
+    边 ID 由 (source, relation, target) 确定性派生：同一条关系在多个片段
+    出现时命中同一 ID，此时合并 chunk 来源与证据而非静默忽略。
+    """
     if not edges:
         return
-        
+
     await init_db(project_id)
     async with aiosqlite.connect(str(_db_path(project_id))) as db:
         for edge in edges:
-            await db.execute('''
-                INSERT OR IGNORE INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, status)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'draft')
-            ''', (edge.id, edge.source_id, edge.target_id, edge.relation_type, json.dumps(edge.properties), json.dumps(edge.source_chunk_ids), json.dumps(getattr(edge, "evidence_quotes", []) or []), edge.confidence))
+            edge_evidence = getattr(edge, "evidence_quotes", []) or []
+            async with db.execute(
+                "SELECT source_chunk_ids, evidence_quotes FROM edges WHERE id = ? AND status = 'draft'",
+                (edge.id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row:
+                existing_chunks = json.loads(row[0]) if row[0] else []
+                new_chunks = list(set(existing_chunks + edge.source_chunk_ids))
+                existing_ev = json.loads(row[1]) if row[1] else []
+                merged_ev = _merge_evidence(existing_ev, edge_evidence)
+                await db.execute(
+                    "UPDATE edges SET source_chunk_ids = ?, evidence_quotes = ? WHERE id = ? AND status = 'draft'",
+                    (json.dumps(new_chunks), json.dumps(merged_ev), edge.id),
+                )
+            else:
+                await db.execute('''
+                    INSERT OR IGNORE INTO edges (id, source_id, target_id, relation_type, properties, source_chunk_ids, evidence_quotes, confidence, run_id, status)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft')
+                ''', (edge.id, edge.source_id, edge.target_id, edge.relation_type, json.dumps(edge.properties), json.dumps(edge.source_chunk_ids), json.dumps(edge_evidence), edge.confidence, edge.run_id))
         await db.commit()
 
-async def get_draft_entity_map(project_id: str) -> Dict[str, Node]:
-    """获取草稿图谱的所有节点映射字典，按名字索引"""
+
+async def add_chunk_links_to_draft_nodes(project_id: str, links: List[Dict]):
+    """批量把「已有实体在新片段中出现」的关联回写数据库。
+
+    link: {node_id, chunk_ids: List[str], evidence_quotes: List[Dict]}
+    修复溯源丢失：抽取快速命中路径以前只更新内存对象，来源记录从未落库。
+    """
+    if not links:
+        return
+
     await init_db(project_id)
-    entity_map = {}
     async with aiosqlite.connect(str(_db_path(project_id))) as db:
-        async with db.execute("SELECT id, name, entity_type, properties, source_chunk_ids, evidence_quotes, confidence FROM nodes WHERE status = 'draft'") as cursor:
+        for link in links:
+            node_id = link.get("node_id")
+            if not node_id:
+                continue
+            async with db.execute(
+                "SELECT source_chunk_ids, evidence_quotes FROM nodes WHERE id = ? AND status = 'draft'",
+                (node_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            if not row:
+                continue
+            existing_chunks = json.loads(row[0]) if row[0] else []
+            merged_chunks = list(set(existing_chunks + list(link.get("chunk_ids", []))))
+            existing_ev = json.loads(row[1]) if row[1] else []
+            merged_ev = _merge_evidence(existing_ev, link.get("evidence_quotes", []))
+            await db.execute(
+                "UPDATE nodes SET source_chunk_ids = ?, evidence_quotes = ? WHERE id = ? AND status = 'draft'",
+                (json.dumps(merged_chunks), json.dumps(merged_ev), node_id),
+            )
+        await db.commit()
+
+
+def entity_key(name: str, entity_type: str) -> tuple:
+    """实体复合键：(name, entity_type)。"""
+    return (name, entity_type)
+
+
+async def get_draft_entity_map(project_id: str) -> Dict[tuple, Node]:
+    """获取草稿图谱的所有节点映射字典，按 (name, entity_type) 复合键索引。"""
+    await init_db(project_id)
+    entity_map: Dict[tuple, Node] = {}
+    async with aiosqlite.connect(str(_db_path(project_id))) as db:
+        async with db.execute(f"SELECT {NODE_COLUMNS} FROM nodes WHERE status = 'draft'") as cursor:
             async for row in cursor:
                 node = _parse_node(row)
-                entity_map[node.name] = node
+                entity_map[entity_key(node.name, node.entity_type)] = node
     return entity_map
 
 

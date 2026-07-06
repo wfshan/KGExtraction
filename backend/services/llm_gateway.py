@@ -136,7 +136,14 @@ class LLMGateway:
                 log_extraction(f"LLM 返回成功 ({usage.get('total_tokens', '未知')} tokens)")
                 if not print_stream:
                     log_extraction(f"Response (Prefix): {content[:100]}...")
-                
+
+                # 上报用量到当前 run 上下文（供成本统计与预算控制）
+                try:
+                    from services.usage_tracker import report_usage
+                    report_usage(usage)
+                except Exception:
+                    pass
+
                 return {
                     "content": content,
                     "model": selected_model,

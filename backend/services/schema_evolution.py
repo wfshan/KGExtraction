@@ -39,7 +39,13 @@ def _versions_dir(project_id: str) -> Path:
 
 
 def detect_schema_gaps(project_id: str) -> Dict:
-    """检测草稿图谱相对当前 Schema 的类型缺口。"""
+    """检测相对当前 Schema 的类型缺口。
+
+    信号源有二：
+    1. 草稿图谱中出现但 Schema 未定义的类型（历史数据）；
+    2. 抽取阶段被严格校验拒绝的 out-of-schema 类型（被拒项存储）——
+       这是最主要的缺口信号：LLM 反复提案某个类型说明文档里确实存在该概念。
+    """
     schema = _load_schema_dict(project_id) or {"entity_types": [], "relation_types": []}
     entity_type_names = {et["name"] for et in schema.get("entity_types", [])}
     relation_type_names = {rt["name"] for rt in schema.get("relation_types", [])}
@@ -79,6 +85,30 @@ def detect_schema_gaps(project_id: str) -> Dict:
                 if len(relation_examples[rt]) < 5:
                     relation_examples[rt].append(f"{s.name} --({rt})--> {t.name}")
 
+    # 信号源 2：抽取阶段被拒的 out-of-schema 类型（高频被拒 = 强缺口信号）
+    rejected_summary = {"total": 0}
+    try:
+        from services.rejected_store import rejected_stats
+        rejected_summary = rejected_stats(project_id)
+        for item in rejected_summary.get("entity_types", []):
+            et = item["name"]
+            if not et or et in entity_type_names or et in RESERVED_ENTITY_TYPES:
+                continue
+            entity_counter[et] += item["count"]
+            for ex in item.get("examples", []):
+                if len(entity_examples[et]) < 5 and ex not in entity_examples[et]:
+                    entity_examples[et].append(ex)
+        for item in rejected_summary.get("relation_types", []):
+            rt = item["name"]
+            if not rt or rt in relation_type_names or rt in RESERVED_RELATION_TYPES:
+                continue
+            relation_counter[rt] += item["count"]
+            for ex in item.get("examples", []):
+                if len(relation_examples[rt]) < 5 and ex not in relation_examples[rt]:
+                    relation_examples[rt].append(ex)
+    except Exception as e:
+        logger.warning(f"[Schema演化] 读取被拒项失败: {e}")
+
     missing_entities = [
         {"name": et, "count": cnt, "examples": entity_examples.get(et, [])}
         for et, cnt in entity_counter.most_common()
@@ -97,6 +127,7 @@ def detect_schema_gaps(project_id: str) -> Dict:
         "missing_entity_types": missing_entities,
         "missing_relation_types": missing_relations,
         "fallback_chunk_count": fallback_chunks,
+        "rejected_total": rejected_summary.get("total", 0),
         "has_gaps": bool(missing_entities or missing_relations),
     }
 
