@@ -1,0 +1,29 @@
+{
+    "nodes": [
+        {
+            "name": "示例实体名称A",
+            "entity_type": "实体类型A",
+            "properties": {
+                "key": "value"
+            },
+            "confidence": 1.0
+        },
+        {
+            "name": "示例实体名称B",
+            "entity_type": "实体类型B",
+            "properties": {
+                "key": "value"
+            },
+            "confidence": 1.0
+        }
+    ],
+    "edges": [
+        {
+            "source_name": "示例实体名称A",
+            "target_name": "示例实体名称B",
+            "relation_type": "关系类型",
+            "properties": {},
+            "confidence": 1.0
+        }
+    ]
+}

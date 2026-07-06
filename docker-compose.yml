@@ -1,0 +1,29 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: kgextraction-backend
+    volumes:
+      - ./backend/data:/app/data
+    env_file:
+      - .env
+    ports:
+      - "8000:8000"
+    restart: always
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: kgextraction-frontend
+    ports:
+      - "8081:80"
+    depends_on:
+      - backend
+    restart: always
+
+volumes:
+  backend-data:

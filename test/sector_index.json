@@ -1,0 +1,285 @@
+{
+    "nodes": [
+        {
+            "name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "entity_type": "审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "未按规定对高风险客户进行持续的身份识别及记录",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "客户姓名录入不符合规则，包括含特殊字符、长度异常或含空格",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人外汇交易中，合规人员未严格执行个人结售汇业务的真实性审核，导致外汇合规管理要求不规范。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "较高风险客户尽职调查流于形式，未充分收集材料验证交易背景，账户持续正常使用，增加洗钱风险。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "证件要素录入不符合反洗钱管控规则",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "大额交易监控存在盲区，部分大额交易未被有效捕捉及上报",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "异常交易监控规则",
+            "entity_type": "审计场景",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人外汇交易",
+            "entity_type": "审计模块",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "对反洗钱高风险客户未采取有效管控措施，导致异常交易持续发生，监测与响应机制存在缺陷。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人客户频繁大额购汇，资金来源涉及多名第三方，存在规避外汇监管规定的风险。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "对于单笔服务贸易收付汇金额大于等值100万美元的客户及异地客户，客户经理未提供或尽职调查报告内容不全，不符合反洗钱政策要求。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人客户异常交易模式未被及时识别，涉及疑似套代购活动，反洗钱监控机制存在漏洞。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "对异常客户和交易的识别与尽职调查不足，导致潜在洗钱风险未被有效识别。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "entity_type": "审计重点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人金融",
+            "entity_type": "审计板块",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "对风险客户未实施充分的尽职调查，导致异常交易监控不足。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "未核实洗钱高风险和较高风险客户的身份信息",
+            "entity_type": "审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "职业信息录入不符合规则，包括性别与职业状况不匹配、职业状况与工作单位信息矛盾",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "entity_type": "审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "未确认客户被评定为洗钱高风险或较高风险的具体原因",
+            "entity_type": "审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "name": "个人外汇交易中，合规人员未加强可疑交易的强化审核，存在合规风险。",
+            "entity_type": "审计指标",
+            "properties": {},
+            "confidence": 1.0
+        }
+    ],
+    "edges": [
+        {
+            "source_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "target_name": "个人外汇交易中，合规人员未加强可疑交易的强化审核，存在合规风险。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "target_name": "个人外汇交易中，合规人员未严格执行个人结售汇业务的真实性审核，导致外汇合规管理要求不规范。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "个人金融",
+            "target_name": "个人外汇交易",
+            "relation_type": "审计板块-审计模块",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "target_name": "未按规定对高风险客户进行持续的身份识别及记录",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认客户被评定为洗钱高风险或较高风险的具体原因",
+            "target_name": "对异常客户和交易的识别与尽职调查不足，导致潜在洗钱风险未被有效识别。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "target_name": "未核实洗钱高风险和较高风险客户的身份信息",
+            "relation_type": "审计重点-审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未核实洗钱高风险和较高风险客户的身份信息",
+            "target_name": "职业信息录入不符合规则，包括性别与职业状况不匹配、职业状况与工作单位信息矛盾",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "target_name": "对反洗钱高风险客户未采取有效管控措施，导致异常交易持续发生，监测与响应机制存在缺陷。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "target_name": "较高风险客户尽职调查流于形式，未充分收集材料验证交易背景，账户持续正常使用，增加洗钱风险。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "target_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "relation_type": "审计重点-审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "target_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "relation_type": "审计重点-审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "异常交易监控规则",
+            "target_name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "relation_type": "审计场景-审计重点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未强化尽职调查",
+            "target_name": "未确认客户被评定为洗钱高风险或较高风险的具体原因",
+            "relation_type": "审计重点-审计要点",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未核实洗钱高风险和较高风险客户的身份信息",
+            "target_name": "客户姓名录入不符合规则，包括含特殊字符、长度异常或含空格",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "target_name": "个人客户异常交易模式未被及时识别，涉及疑似套代购活动，反洗钱监控机制存在漏洞。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "target_name": "大额交易监控存在盲区，部分大额交易未被有效捕捉及上报",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "target_name": "个人客户频繁大额购汇，资金来源涉及多名第三方，存在规避外汇监管规定的风险。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未确认洗钱高风险和较高风险客户的交易规模与其实际经营情况的匹配性",
+            "target_name": "对于单笔服务贸易收付汇金额大于等值100万美元的客户及异地客户，客户经理未提供或尽职调查报告内容不全，不符合反洗钱政策要求。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "洗钱高风险和较高风险客户未进行强化尽职调查",
+            "target_name": "对风险客户未实施充分的尽职调查，导致异常交易监控不足。",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "未核实洗钱高风险和较高风险客户的身份信息",
+            "target_name": "证件要素录入不符合反洗钱管控规则",
+            "relation_type": "审计要点-审计指标",
+            "properties": {},
+            "confidence": 1.0
+        },
+        {
+            "source_name": "个人外汇交易",
+            "target_name": "异常交易监控规则",
+            "relation_type": "审计模块-审计场景",
+            "properties": {},
+            "confidence": 1.0
+        }
+    ]
+}
