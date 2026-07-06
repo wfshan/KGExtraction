@@ -47,9 +47,12 @@ interface ChatMessage {
 
 const { Text } = Typography;
 const GRAPH_RAG_MODE_LABEL: Record<string, string> = {
+    auto: '智能路由',
     graph_flow: '独立流式',
     graph_full: '全向扩散',
     graph_path: '路径查找',
+    hippo: '关联检索',
+    global: '全局摘要',
     text_only: '仅文本块',
     direct: '模型直答',
 };
@@ -79,7 +82,7 @@ export default function GraphPage() {
     const [chatLoading, setChatLoading] = useState(false);
     const [graphRagMaxDegree, setGraphRagMaxDegree] = useState<number>(2);
     const [graphRagMaxStartEntities, setGraphRagMaxStartEntities] = useState<number>(5);
-    const [graphRagMode, setGraphRagMode] = useState<string>('graph_flow');
+    const [graphRagMode, setGraphRagMode] = useState<string>('auto');
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Exploration State
@@ -88,6 +91,7 @@ export default function GraphPage() {
     const [contextMenu, setContextMenu] = useState<{ x: number, y: number, nodeId: string } | null>(null);
     const [explorationMode, setExplorationMode] = useState(true); // 默认开启按需探索模式
     const [exploring, setExploring] = useState(false);
+    const [showDocLayer, setShowDocLayer] = useState(false); // 文档结构层（片段锚点/「下一段」边）默认隐藏
 
     // Load projects
     useEffect(() => {
@@ -196,19 +200,19 @@ export default function GraphPage() {
             cyRef.current = null;
         }
 
-        // 如果不是探索模式，则加载全量
+        // 如果不是探索模式，则加载全量（文档结构层按开关过滤）
         if (!explorationMode) {
-            getGraph(selectedProject, 'published').then((res) => {
+            getGraph(selectedProject, 'published', showDocLayer).then((res) => {
                 const data = res.data.nodes?.length > 0 ? res.data : null;
                 if (data) {
                     setGraph(data);
                 } else {
-                    getGraph(selectedProject, 'draft').then((r) => setGraph(r.data));
+                    getGraph(selectedProject, 'draft', showDocLayer).then((r) => setGraph(r.data));
                 }
             });
         }
         getSchema(selectedProject).then((res) => setSchema(res.data)).catch(() => null);
-    }, [selectedProject, explorationMode]);
+    }, [selectedProject, explorationMode, showDocLayer]);
 
     // Build Cytoscape graph
     useEffect(() => {
@@ -671,12 +675,20 @@ export default function GraphPage() {
                             ))}
                         </AutoComplete>
                     )}
-                    <Checkbox 
-                        checked={explorationMode} 
+                    <Checkbox
+                        checked={explorationMode}
                         onChange={e => setExplorationMode(e.target.checked)}
                     >
                         探索模式
                     </Checkbox>
+                    {!explorationMode && (
+                        <Checkbox
+                            checked={showDocLayer}
+                            onChange={e => setShowDocLayer(e.target.checked)}
+                        >
+                            文档结构层
+                        </Checkbox>
+                    )}
 
                     <Button size="small" icon={<ExportOutlined />} onClick={handleExport} />
                     <Button
@@ -1031,20 +1043,26 @@ export default function GraphPage() {
                                         setGraphRagMaxStartEntities(4);
                                     }
                                 }}
-                                style={{ width: 120 }}
+                                style={{ width: 130 }}
                                 options={[
+                                    { label: '智能路由（推荐）', value: 'auto' },
                                     { label: '独立流式', value: 'graph_flow' },
                                     { label: '全向扩散', value: 'graph_full' },
                                     { label: '路径查找', value: 'graph_path' },
+                                    { label: '关联检索', value: 'hippo' },
+                                    { label: '全局摘要', value: 'global' },
                                     { label: '仅文本块', value: 'text_only' },
                                     { label: '模型直答', value: 'direct' },
                                 ]}
                             />
                             <Tooltip title={
                                 <div>
-                                    <b>独立流式</b>: 平衡模式，优先推荐。<br/>
+                                    <b>智能路由</b>: 按问题类型自动选择检索方式（推荐）。<br/>
+                                    <b>独立流式</b>: 子图扩展，实体邻域类问题。<br/>
                                     <b>全向扩散</b>: 覆盖广但噪点多，建议降低检索深度。<br/>
                                     <b>路径查找</b>: 关注实体之间路径，适合关系解释类问题。<br/>
+                                    <b>关联检索</b>: PPR 激活扩散，适合多跳关联问题。<br/>
+                                    <b>全局摘要</b>: 基于社区摘要回答宏观主题类问题。<br/>
                                     <b>仅文本块</b>: 不看图结构，只基于文本召回。<br/>
                                     <b>模型直答</b>: 不做召回，速度快但不可溯源。
                                 </div>

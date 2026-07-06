@@ -18,6 +18,7 @@ import { Dropdown } from 'antd';
 import { useNavigate } from 'react-router-dom';
 import { getGraph, publishGraph, rejectGraph, updateNode, deleteNode, updateEdge, deleteEdge } from '../api';
 import type { GraphData, GraphNode, GraphEdge } from '../api';
+import ReviewQueue from './ReviewQueue';
 
 interface Props {
     projectId: string;
@@ -500,7 +501,13 @@ export default function HumanReview({ projectId, onPrev }: Props) {
             </div>
 
             <Tabs
+                defaultActiveKey="review"
                 items={[
+                    {
+                        key: 'review',
+                        label: '📋 复核队列（增量）',
+                        children: <ReviewQueue projectId={projectId} onChanged={loadGraph} />,
+                    },
                     {
                         key: 'nodes',
                         label: `实体列表 (${displayNodes.length})`,

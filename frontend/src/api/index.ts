@@ -5,9 +5,30 @@ import axios from 'axios';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
+// ===== 访问令牌与操作人（最小认证；见后端 KG_ACCESS_TOKEN） =====
+export const getAccessToken = () => localStorage.getItem('kg_token') || '';
+export const setAccessToken = (token: string) => localStorage.setItem('kg_token', token);
+export const getOperatorName = () => localStorage.getItem('kg_user') || '';
+export const setOperatorName = (name: string) => localStorage.setItem('kg_user', name);
+
+export const authHeaders = (): Record<string, string> => {
+  const headers: Record<string, string> = {};
+  const token = getAccessToken();
+  if (token) headers['Authorization'] = `Bearer ${token}`;
+  const user = getOperatorName();
+  if (user) headers['X-User'] = user;
+  return headers;
+};
+
 const api = axios.create({
   baseURL: API_BASE,
   timeout: 60000,
+});
+
+api.interceptors.request.use((config) => {
+  const headers = authHeaders();
+  Object.entries(headers).forEach(([k, v]) => config.headers.set(k, v));
+  return config;
 });
 
 // ===== 系统配置 =====
@@ -34,6 +55,16 @@ export interface SystemConfig {
   disambiguation_entity_confidence_threshold: number;
   llm_stream_log: boolean;
   database_batch_size: number;
+  // 成本控制
+  run_token_budget?: number;
+  price_per_1k_input_tokens?: number;
+  price_per_1k_output_tokens?: number;
+  // 证据与门控
+  enable_evidence_anchor?: boolean;
+  enable_publish_gate?: boolean;
+  publish_gate_block?: boolean;
+  publish_gate_require_evidence?: boolean;
+  [key: string]: any;
 }
 
 export const getSystemConfig = () => api.get<SystemConfig>('/system/config');
@@ -110,8 +141,9 @@ export interface EntityType {
 export interface RelationType {
   name: string;
   definition: string;
-  source_entity_type: string;
-  target_entity_type: string;
+  // 支持单类型（string，兼容旧数据）或多类型（string[]）约束；空 = 不约束
+  source_entity_type: string | string[];
+  target_entity_type: string | string[];
   examples: string[];
 }
 
@@ -143,7 +175,9 @@ export const getProfileSummaryStream = async (
   source: string = 'auto'
 ) => {
   try {
-    const response = await fetch(`${API_BASE}/projects/${projectId}/schema/profile-summary?source=${source}`);
+    const response = await fetch(`${API_BASE}/projects/${projectId}/schema/profile-summary?source=${source}`, {
+      headers: authHeaders(),
+    });
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     if (!response.body) throw new Error('No response body');
     const reader = response.body.getReader();
@@ -173,6 +207,7 @@ export const chatWithSchemaStream = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify({ messages, source }),
     });
@@ -224,6 +259,19 @@ export interface Run {
   error_message: string | null;
 }
 
+export interface RunEstimate {
+  total_chunks: number;
+  calls_per_chunk: number;
+  estimated_calls: number;
+  estimated_input_tokens: number;
+  estimated_output_tokens: number;
+  estimated_total_tokens: number;
+  estimated_cost: number | null;
+  token_budget: number;
+  budget_sufficient: boolean;
+}
+
+export const estimateRun = (projectId: string) => api.get<RunEstimate>(`/projects/${projectId}/runs/estimate`);
 export const startRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs`, {});
 export const listRuns = (projectId: string) => api.get<Run[]>(`/projects/${projectId}/runs`);
 export const getRun = (projectId: string, runId: string) =>
@@ -263,8 +311,8 @@ export interface GraphData {
   updated_at: string;
 }
 
-export const getGraph = (projectId: string, status = 'draft') =>
-  api.get<GraphData>(`/projects/${projectId}/graph`, { params: { status } });
+export const getGraph = (projectId: string, status = 'draft', includeDocLayer = true) =>
+  api.get<GraphData>(`/projects/${projectId}/graph`, { params: { status, include_doc_layer: includeDocLayer } });
 export const getProjectSubgraph = (projectId: string, nodeIds: string, depth = 1, status = 'published', direction = 'both') =>
   api.get<GraphData>(`/projects/${projectId}/graph/subgraph`, { params: { node_ids: nodeIds, depth, status, direction } });
 export const searchEntities = (projectId: string, query: string, status = 'published') =>
@@ -283,6 +331,63 @@ export const updateEdge = (projectId: string, edgeId: string, data: Partial<Grap
   api.patch(`/projects/${projectId}/graph/edges/${edgeId}`, data);
 export const deleteEdge = (projectId: string, edgeId: string) =>
   api.delete(`/projects/${projectId}/graph/edges/${edgeId}`);
+
+// ===== 人工复核队列 / 审计 / 被拒项 =====
+export interface ReviewItem {
+  kind: 'node' | 'edge';
+  id: string;
+  title: string;
+  entity_type?: string;
+  relation_type?: string;
+  confidence: number;
+  run_id: string;
+  change: 'new' | 'changed';
+  violations: string[];
+  evidence_verified: boolean;
+  evidence_quotes: { chunk_id: string; quote: string; verified?: boolean | null }[];
+  source_chunk_count: number;
+  review_status: 'pending' | 'approved';
+}
+
+export interface ReviewQueue {
+  total: number;
+  pending: number;
+  with_violations: number;
+  unverified_evidence: number;
+  items: ReviewItem[];
+}
+
+export const getReviewQueue = (projectId: string, runId?: string) =>
+  api.get<ReviewQueue>(`/projects/${projectId}/graph/review/queue`, { params: runId ? { run_id: runId } : {} });
+
+export const postReviewDecision = (projectId: string, data: { kind: string; target_id: string; decision: 'approve' | 'reject'; reason?: string }) =>
+  api.post(`/projects/${projectId}/graph/review/decision`, data);
+
+export interface AuditLogEntry {
+  id: string;
+  ts: string;
+  actor: string;
+  action: string;
+  target_kind: string;
+  target_id: string;
+  detail: Record<string, any>;
+}
+
+export const getAuditLog = (projectId: string, limit = 100) =>
+  api.get<{ logs: AuditLogEntry[] }>(`/projects/${projectId}/graph/audit`, { params: { limit } });
+
+export interface RejectedItemsResponse {
+  stats: {
+    total: number;
+    by_reason: Record<string, number>;
+    entity_types: { name: string; count: number; examples: string[] }[];
+    relation_types: { name: string; count: number; examples: string[] }[];
+  };
+  items: any[];
+}
+
+export const getRejectedItems = (projectId: string, runId?: string) =>
+  api.get<RejectedItemsResponse>(`/projects/${projectId}/graph/rejected`, { params: runId ? { run_id: runId } : {} });
 
 // 图谱数据导入（冷启动）
 export const downloadGraphTemplate = (projectId: string) =>
@@ -337,6 +442,7 @@ export const chatWithGraphStream = async (
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders(),
       },
       body: JSON.stringify(body),
     });

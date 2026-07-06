@@ -3,7 +3,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import {
-    Card, Button, Input, Space, message, Spin, Empty, Popconfirm, ColorPicker, Drawer, List, Avatar, Typography, Modal, Radio
+    Card, Button, Input, Space, message, Spin, Empty, Popconfirm, ColorPicker, Drawer, List, Avatar, Typography, Modal, Radio, Select
 } from 'antd';
 import {
     PlusOutlined, DeleteOutlined, BulbOutlined, TagOutlined, SwapOutlined, MessageOutlined, RobotOutlined, UserOutlined, SendOutlined,
@@ -28,6 +28,16 @@ const DEFAULT_COLORS = [
     '#4A90D9', '#50C878', '#FF6B6B', '#FFD93D',
     '#9B59B6', '#1ABC9C', '#E67E22', '#3498DB',
 ];
+
+// 约束字段兼容单类型（string，旧数据）与多类型（string[]）
+const constraintToArray = (v: string | string[] | undefined): string[] => {
+    if (!v) return [];
+    return Array.isArray(v) ? v.filter(Boolean) : [v].filter(Boolean);
+};
+
+// 单选保持 string（兼容旧数据消费方），多选存 string[]
+const arrayToConstraint = (arr: string[]): string | string[] =>
+    arr.length <= 1 ? (arr[0] || '') : arr;
 
 export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
     const [schema, setSchema] = useState<SchemaConfig>({ entity_types: [], relation_types: [] });
@@ -467,20 +477,26 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             style={{ width: 200 }}
                                         />
                                         <span style={{ color: 'var(--gray-400)' }}>从</span>
-                                        <Input
-                                            placeholder="源实体类型"
-                                            value={rt.source_entity_type}
-                                            onChange={(e) => updateRelationType(i, 'source_entity_type', e.target.value)}
+                                        <Select
+                                            mode="tags"
+                                            placeholder="源类型（可多选，空=不限）"
+                                            value={constraintToArray(rt.source_entity_type)}
+                                            onChange={(vals: string[]) => updateRelationType(i, 'source_entity_type', arrayToConstraint(vals))}
                                             onBlur={handleSave}
-                                            style={{ width: 120 }}
+                                            options={schema.entity_types.map(et => ({ label: et.name, value: et.name }))}
+                                            style={{ minWidth: 150 }}
+                                            size="small"
                                         />
                                         <span style={{ color: 'var(--gray-400)' }}>→</span>
-                                        <Input
-                                            placeholder="目标实体类型"
-                                            value={rt.target_entity_type}
-                                            onChange={(e) => updateRelationType(i, 'target_entity_type', e.target.value)}
+                                        <Select
+                                            mode="tags"
+                                            placeholder="目标类型（可多选，空=不限）"
+                                            value={constraintToArray(rt.target_entity_type)}
+                                            onChange={(vals: string[]) => updateRelationType(i, 'target_entity_type', arrayToConstraint(vals))}
                                             onBlur={handleSave}
-                                            style={{ width: 120 }}
+                                            options={schema.entity_types.map(et => ({ label: et.name, value: et.name }))}
+                                            style={{ minWidth: 150 }}
+                                            size="small"
                                         />
                                         <Popconfirm title="确定删除？" onConfirm={() => removeRelationType(i)}>
                                             <Button danger size="small" icon={<DeleteOutlined />} />

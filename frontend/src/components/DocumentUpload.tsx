@@ -136,7 +136,7 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
             // 目前后端逻辑：chunks 存储在 {doc.id}_chunks.json 中
             // 我们通过一个临时的获取方式（假设后端 getChunksByIds 能处理特殊请求，或者我们增加接口）
             // 简单起见，我先尝试用项目路径拉取
-            const res = await listDocuments(projectId); 
+            await listDocuments(projectId);
             // 既然前端没有 listChunks 接口，我们可能需要后端配合或者使用现有接口
             // 发现后端有一个通过 IDs 获取内容接口，但我们需要知道 IDs。
             // 我们可以直接让后端提供一个专门的预览接口，或者这里先展示提示。
@@ -274,7 +274,7 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
                                  record.chunk_method === 'hierarchical' ? `层级(${record.hierarchical_level}级)` : '固定长度'}
                                 {record.chunk_method !== 'paragraph' && record.chunk_method !== 'hierarchical' ? ` (${record.chunk_size})` : ''}
                             </Tag>
-                            {record.max_chunk_length > 0 && (
+                            {(record.max_chunk_length ?? 0) > 0 && (
                                 <Tag color="cyan" bordered={false} style={{ margin: 0, fontSize: 10 }}>
                                     最大: {record.max_chunk_length}字
                                 </Tag>

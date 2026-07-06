@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { Button, Modal, Form, Input, InputNumber, Switch, Divider, message, Tooltip, Select, Alert } from 'antd';
 import { SettingOutlined, QuestionCircleOutlined } from '@ant-design/icons';
-import { getSystemConfig, updateSystemConfig } from '../api';
+import { getSystemConfig, updateSystemConfig, getOperatorName, setOperatorName, getAccessToken, setAccessToken } from '../api';
 import type { SystemConfig as SystemConfigType } from '../api';
 
 export default function SystemConfig() {
@@ -13,6 +13,9 @@ export default function SystemConfig() {
     const [form] = Form.useForm();
     const similarityBackend = Form.useWatch('similarity_backend', form) || 'keyword';
     const disambiguationEnabled = Form.useWatch('enable_disambiguation', form) ?? true;
+    // 本地身份配置（不上传后端配置文件；令牌仅存浏览器 localStorage）
+    const [operatorName, setOperatorNameState] = useState(getOperatorName());
+    const [accessToken, setAccessTokenState] = useState(getAccessToken());
 
     const withTip = (label: string, tip: string) => (
         <span>
@@ -40,6 +43,8 @@ export default function SystemConfig() {
         try {
             const values = await form.validateFields();
             setLoading(true);
+            setOperatorName(operatorName.trim());
+            setAccessToken(accessToken.trim());
             await updateSystemConfig(values as SystemConfigType);
             message.success('配置已保存');
             setOpen(false);
@@ -237,6 +242,50 @@ export default function SystemConfig() {
                     >
                         <Switch checkedChildren="开启" unCheckedChildren="关闭" />
                     </Form.Item>
+
+                    <Divider style={{ margin: '8px 0 16px' }}>成本控制</Divider>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                        <Form.Item name="run_token_budget" label={withTip('单次任务 token 预算', '0 = 不限制。超过预算后抽取任务优雅停止，可稍后继续。')}>
+                            <InputNumber min={0} step={10000} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="price_per_1k_input_tokens" label={withTip('输入单价 (¥/1k)', '仅用于启动前成本预估展示，0 = 不展示费用。')}>
+                            <InputNumber min={0} step={0.001} style={{ width: '100%' }} />
+                        </Form.Item>
+                        <Form.Item name="price_per_1k_output_tokens" label={withTip('输出单价 (¥/1k)', '仅用于启动前成本预估展示。')}>
+                            <InputNumber min={0} step={0.001} style={{ width: '100%' }} />
+                        </Form.Item>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0 16px' }}>证据与发布门控</Divider>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 12 }}>
+                        <Form.Item name="enable_evidence_anchor" label={withTip('证据锚定', '抽取时要求 LLM 返回支撑短句，并逐字校验是否命中原文（verified 标记）。')} valuePropName="checked">
+                            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                        </Form.Item>
+                        <Form.Item name="enable_publish_gate" label={withTip('发布门控', '发布前确定性 Schema 校验，仅合规知识进入发布图。')} valuePropName="checked">
+                            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                        </Form.Item>
+                        <Form.Item name="publish_gate_require_evidence" label={withTip('要求已验证证据', '开启后关系必须具备至少一条命中原文的证据短句才能发布。')} valuePropName="checked">
+                            <Switch checkedChildren="开启" unCheckedChildren="关闭" />
+                        </Form.Item>
+                    </div>
+
+                    <Divider style={{ margin: '8px 0 16px' }}>身份与访问（仅存本机浏览器）</Divider>
+                    <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                        <Form.Item label={withTip('操作人名称', '写入审计日志（发布/复核/编辑留痕）。团队使用时请填写真实姓名或工号。')}>
+                            <Input
+                                placeholder="如：张三"
+                                value={operatorName}
+                                onChange={(e) => setOperatorNameState(e.target.value)}
+                            />
+                        </Form.Item>
+                        <Form.Item label={withTip('访问令牌', '后端 .env 配置 KG_ACCESS_TOKEN 后，请在此填写相同令牌。仅存浏览器本地。')}>
+                            <Input.Password
+                                placeholder="KG_ACCESS_TOKEN"
+                                value={accessToken}
+                                onChange={(e) => setAccessTokenState(e.target.value)}
+                            />
+                        </Form.Item>
+                    </div>
                 </Form>
             </Modal>
         </>

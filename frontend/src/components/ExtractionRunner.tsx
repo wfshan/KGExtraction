@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     Card, Button, Space, message, Tag, Alert, Progress, Popconfirm, Result, Spin,
-    Collapse, Checkbox, Divider
+    Collapse, Checkbox, Divider, Modal, Descriptions
 } from 'antd';
 import {
     ThunderboltOutlined, SyncOutlined, CheckCircleOutlined,
@@ -14,9 +14,9 @@ import {
 } from '@ant-design/icons';
 import {
     startRun, listRuns, getRun, resumeRun, restartRun, getRunLogs,
-    listDocuments, getSchema, updateDocument
+    listDocuments, getSchema, updateDocument, estimateRun
 } from '../api';
-import type { Run, Document, SchemaConfig } from '../api';
+import type { Run, Document, SchemaConfig, RunEstimate } from '../api';
 
 interface Props {
     projectId: string;
@@ -146,7 +146,7 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
         }
     };
 
-    const handleStart = async () => {
+    const doStart = async () => {
         setLoading(true);
         try {
             // 先保存目标配置
@@ -160,6 +160,50 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
         } finally {
             setLoading(false);
         }
+    };
+
+    // 启动前先展示确定性成本预估（分片数 × 启用功能 × 平均 token），由用户确认
+    const handleStart = async () => {
+        setLoading(true);
+        let est: RunEstimate | null = null;
+        try {
+            const res = await estimateRun(projectId);
+            est = res.data;
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '成本预估失败');
+            setLoading(false);
+            return;
+        }
+        setLoading(false);
+
+        Modal.confirm({
+            title: '抽取成本预估',
+            width: 480,
+            content: (
+                <Descriptions column={1} size="small" style={{ marginTop: 12 }}>
+                    <Descriptions.Item label="待处理分片">{est.total_chunks} 个</Descriptions.Item>
+                    <Descriptions.Item label="每分片 LLM 调用">{est.calls_per_chunk} 次（由抽取模式与消歧/跨片段/自修正开关决定）</Descriptions.Item>
+                    <Descriptions.Item label="预计调用总数">约 {est.estimated_calls} 次</Descriptions.Item>
+                    <Descriptions.Item label="预计 token 消耗">
+                        约 {(est.estimated_total_tokens / 1000).toFixed(0)}k（输入 {(est.estimated_input_tokens / 1000).toFixed(0)}k + 输出 {(est.estimated_output_tokens / 1000).toFixed(0)}k）
+                    </Descriptions.Item>
+                    {est.estimated_cost != null && (
+                        <Descriptions.Item label="预计费用">约 ¥{est.estimated_cost}</Descriptions.Item>
+                    )}
+                    {est.token_budget > 0 && (
+                        <Descriptions.Item label="token 预算">
+                            {est.token_budget}{' '}
+                            {est.budget_sufficient
+                                ? <Tag color="green">充足</Tag>
+                                : <Tag color="red">可能不足，超限将提前停止</Tag>}
+                        </Descriptions.Item>
+                    )}
+                </Descriptions>
+            ),
+            okText: '确认启动',
+            cancelText: '取消',
+            onOk: doStart,
+        });
     };
 
     const handleResume = async () => {
