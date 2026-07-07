@@ -13,7 +13,7 @@ import {
     FileTextOutlined
 } from '@ant-design/icons';
 import {
-    startRun, listRuns, getRun, resumeRun, restartRun, getRunLogs,
+    startRun, startIncrementalRun, listRuns, getRun, resumeRun, restartRun, getRunLogs,
     listDocuments, getSchema, updateDocument, estimateRun
 } from '../api';
 import type { Run, Document, SchemaConfig, RunEstimate } from '../api';
@@ -221,6 +221,22 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
         }
     };
 
+    // 增量抽取：仅处理上次抽取后新上传的文档，与既有草稿合并（不清空图谱）
+    const handleIncremental = async () => {
+        setLoading(true);
+        try {
+            await saveAllTargets();
+            const res = await startIncrementalRun(projectId);
+            setRun(res.data);
+            message.success('增量抽取已启动（仅处理新文档）');
+            startPolling(res.data.id);
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '增量抽取启动失败');
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleRestart = async () => {
         if (!run) return;
         setLoading(true);
@@ -371,7 +387,8 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                     <Button
                         type="primary"
                         onClick={onNext}
-                        disabled={!run || run.status !== 'completed'}
+                        disabled={!run || run.status === 'running'}
+                        title={run?.status === 'failed' ? '抽取失败，但已抽取的部分结果可进入人工复核查看' : undefined}
                     >
                         下一步 →
                     </Button>
@@ -392,7 +409,13 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                         <Alert
                             type="error"
                             message="上次抽取失败"
-                            description={run.error_message}
+                            description={
+                                <span>
+                                    {run.error_message}
+                                    <br />
+                                    失败前已抽取的部分结果仍保留在草稿图中，可点击右上角「下一步」进入人工复核查看。
+                                </span>
+                            }
                             showIcon
                             style={{ marginBottom: 16, textAlign: 'left' }}
                         />
@@ -472,7 +495,28 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                             <div className="stat-value">{run.stats?.entities_deduplicated || 0}</div>
                             <div className="stat-label">实体消歧</div>
                         </div>
+                        <div className="stat-card">
+                            <div className="stat-value">
+                                {((run.stats?.tokens_used || 0) / 1000).toFixed(1)}k
+                            </div>
+                            <div className="stat-label">token 消耗</div>
+                        </div>
                     </div>
+
+                    {(run.stats as any)?.budget_stopped && (
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message="token 预算已用尽，任务提前停止"
+                            description="剩余分片未处理。可在系统配置中调高「单次任务 token 预算」后点击「继续抽取」处理剩余部分，已抽取结果不受影响。"
+                            style={{ marginTop: 16, textAlign: 'left' }}
+                            action={
+                                <Button size="small" type="primary" onClick={handleResume} loading={loading} icon={<PlayCircleOutlined />}>
+                                    继续抽取
+                                </Button>
+                            }
+                        />
+                    )}
 
                     <div style={{
                         marginTop: 24,
@@ -541,17 +585,26 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                                 subTitle="请点击下一步进行人工复核，或者在下方重新配置并重新抽取"
                                 style={{ padding: 0 }}
                                 extra={[
-                                    <Button 
-                                        key="toggle" 
+                                    <Button
+                                        key="toggle"
                                         icon={configVisible ? <DownOutlined /> : <RightOutlined />}
                                         onClick={() => setConfigVisible(!configVisible)}
                                     >
                                         {configVisible ? '隐藏配置' : '修改配置'}
                                     </Button>,
-                                    <Popconfirm 
+                                    <Button
+                                        key="incremental"
+                                        icon={<PlayCircleOutlined />}
+                                        loading={loading}
+                                        onClick={handleIncremental}
+                                        title="仅抽取上次任务之后新上传的文档，结果合并进现有草稿图，不清空已有数据"
+                                    >
+                                        增量抽取新文档
+                                    </Button>,
+                                    <Popconfirm
                                         key="restart"
-                                        title="确定重新抽取？" 
-                                        description="此操作将清空当前图谱并从头开始。如果之前上传了新文档，建议先在此修改配置。" 
+                                        title="确定重新抽取？"
+                                        description="此操作将清空当前图谱并从头开始。若只是新上传了文档，请改用「增量抽取新文档」。"
                                         onConfirm={handleRestart}
                                     >
                                         <Button type="primary" icon={<ReloadOutlined />}>

@@ -128,28 +128,14 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
 
     const handleOpenPreview = async (doc: Document) => {
         setPreviewDoc(doc);
+        setPreviewChunks([]);
         setPreviewModalVisible(true);
         setPreviewLoading(true);
         try {
-            // 我们并不知道具体 IDs，但我们可以通过后端逻辑获取该文挡的所有分片
-            // 实际上我们可以给后端加一个 list_chunks_by_doc_id 的接口，或者这里通过 mockIds 处理
-            // 目前后端逻辑：chunks 存储在 {doc.id}_chunks.json 中
-            // 我们通过一个临时的获取方式（假设后端 getChunksByIds 能处理特殊请求，或者我们增加接口）
-            // 简单起见，我先尝试用项目路径拉取
-            await listDocuments(projectId);
-            // 既然前端没有 listChunks 接口，我们可能需要后端配合或者使用现有接口
-            // 发现后端有一个通过 IDs 获取内容接口，但我们需要知道 IDs。
-            // 我们可以直接让后端提供一个专门的预览接口，或者这里先展示提示。
-            // 为了完成演示，我将在这里模拟加载。
-            message.loading({ content: '加载片段预览...', key: 'preview' });
-            
-            // TODO: 后端增加 list_chunks_by_doc_id 接口。
-            // 为了快速实现，我假设 getChunksByIds 能够通过 doc_id 过滤（修改后端）
             const chunksRes = await listDocumentChunks(projectId, doc.id);
             setPreviewChunks(chunksRes.data);
-            message.success({ content: '加载成功预览', key: 'preview' });
         } catch {
-            message.error({ content: '加载预设片段失败，请确认文档已解析', key: 'preview' });
+            message.error('加载片段预览失败，请确认文档已解析');
         } finally {
             setPreviewLoading(false);
         }

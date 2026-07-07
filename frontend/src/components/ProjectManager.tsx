@@ -89,7 +89,13 @@ export default function ProjectManager({ selectedProjectId, onSelect, onNext }: 
             style={{ borderRadius: 12 }}
         >
             {projects.length === 0 ? (
-                <Empty description="暂无项目，请创建新项目" />
+                loading ? (
+                    <div style={{ textAlign: 'center', padding: '40px 0', color: 'var(--gray-400)' }}>
+                        加载项目列表中...
+                    </div>
+                ) : (
+                    <Empty description="暂无项目，请创建新项目" />
+                )
             ) : (
                 <List
                     loading={loading}
@@ -113,6 +119,8 @@ export default function ProjectManager({ selectedProjectId, onSelect, onNext }: 
                                     <Popconfirm
                                         key="delete"
                                         title="确定删除此项目？"
+                                        description="项目下的文档、Schema、图谱与审计记录将全部删除，不可恢复"
+                                        okType="danger"
                                         onConfirm={(e) => {
                                             e?.stopPropagation();
                                             handleDelete(project.id);

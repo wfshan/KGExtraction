@@ -4,7 +4,7 @@
 import { useEffect, useState, useMemo } from 'react';
 import {
     Card, Button, Table, Tag, Space, Statistic, message, Modal, Result, Tabs,
-    Input, Popconfirm, InputNumber, Tooltip, Checkbox,
+    Input, Popconfirm, InputNumber, Tooltip, Checkbox, Select, Alert,
 } from 'antd';
 import type { CheckboxChangeEvent } from 'antd/es/checkbox';
 import {
@@ -16,8 +16,8 @@ import {
 import type { MenuProps } from 'antd';
 import { Dropdown } from 'antd';
 import { useNavigate } from 'react-router-dom';
-import { getGraph, publishGraph, rejectGraph, updateNode, deleteNode, updateEdge, deleteEdge } from '../api';
-import type { GraphData, GraphNode, GraphEdge } from '../api';
+import { getGraph, publishGraph, rejectGraph, updateNode, deleteNode, updateEdge, deleteEdge, validateGraph, getSchema } from '../api';
+import type { GraphData, GraphNode, GraphEdge, SchemaConfig } from '../api';
 import ReviewQueue from './ReviewQueue';
 
 interface Props {
@@ -27,18 +27,20 @@ interface Props {
 
 export default function HumanReview({ projectId, onPrev }: Props) {
     const [graph, setGraph] = useState<GraphData | null>(null);
+    const [schema, setSchema] = useState<SchemaConfig | null>(null);
     const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
     const [editingEdgeId, setEditingEdgeId] = useState<string | null>(null);
     const [editNodeData, setEditNodeData] = useState<Partial<GraphNode>>({});
     const [editEdgeData, setEditEdgeData] = useState<Partial<GraphEdge>>({});
-    
+
     // 过滤状态
     const [hideHighConfidence, setHideHighConfidence] = useState(false);
-    
+
     const navigate = useNavigate();
 
     useEffect(() => {
         loadGraph();
+        getSchema(projectId).then((res) => setSchema(res.data)).catch(() => null);
     }, [projectId]);
 
     const loadGraph = async () => {
@@ -128,11 +130,48 @@ export default function HumanReview({ projectId, onPrev }: Props) {
     };
 
     // ===== 发布/拒绝/导出 =====
-    const handlePublish = () => {
+    // 发布前先跑门控预演：让用户在点确认前就知道哪些项会被过滤、为什么，
+    // 而不是发布后发现节点数变少却无从解释
+    const handlePublish = async () => {
+        let report: Awaited<ReturnType<typeof validateGraph>>['data'] | null = null;
+        try {
+            const res = await validateGraph(projectId);
+            report = res.data;
+        } catch {
+            // 预演失败不阻断发布，退化为原有的简单确认
+        }
+
+        const rejectedCount = report ? report.stats.rejected_nodes + report.stats.rejected_edges : 0;
         Modal.confirm({
             title: '确认发布图谱？',
-            content: '发布后将创建新版本快照，并可在图谱可视化中查看。',
-            okText: '确认发布',
+            width: 520,
+            content: (
+                <div>
+                    <p>发布后将创建新版本快照，并可在图谱可视化中查看。</p>
+                    {report && (
+                        rejectedCount > 0 ? (
+                            <Alert
+                                type="warning"
+                                showIcon
+                                message={`门控预演：${report.stats.rejected_nodes} 个节点、${report.stats.rejected_edges} 条边未通过校验，发布时将被过滤`}
+                                description={
+                                    <ul style={{ margin: '4px 0 0', paddingLeft: 18, maxHeight: 120, overflowY: 'auto' }}>
+                                        {report.violations.slice(0, 5).map((v, i) => (
+                                            <li key={i} style={{ fontSize: 12 }}>{v.message}</li>
+                                        ))}
+                                        {report.violation_count > 5 && (
+                                            <li style={{ fontSize: 12, color: '#999' }}>…共 {report.violation_count} 条违规，可在「复核队列」中逐项处理</li>
+                                        )}
+                                    </ul>
+                                }
+                            />
+                        ) : (
+                            <Alert type="success" showIcon message={`门控预演通过：${report.stats.valid_nodes} 个节点、${report.stats.valid_edges} 条边全部合规`} />
+                        )
+                    )}
+                </div>
+            ),
+            okText: rejectedCount > 0 ? `过滤 ${rejectedCount} 项后发布` : '确认发布',
             cancelText: '取消',
             onOk: async () => {
                 try {
@@ -253,17 +292,25 @@ export default function HumanReview({ projectId, onPrev }: Props) {
             title: '类型',
             dataIndex: 'entity_type',
             key: 'type',
-            width: 120,
+            width: 150,
             render: (type: string, record: GraphNode) =>
                 editingNodeId === record.id ? (
-                    <Input
+                    // 类型限定为 Schema 内选项：改成 Schema 外的类型会被发布门控直接过滤
+                    <Select
                         size="small"
+                        showSearch
                         value={editNodeData.entity_type}
-                        onChange={(e) => setEditNodeData({ ...editNodeData, entity_type: e.target.value })}
-                        style={{ width: 100 }}
+                        onChange={(v) => setEditNodeData({ ...editNodeData, entity_type: v })}
+                        options={(schema?.entity_types || []).map((et) => ({ label: et.name, value: et.name }))}
+                        style={{ width: 130 }}
+                        placeholder="选择类型"
                     />
                 ) : (
-                    <Tag color="blue">{type}</Tag>
+                    <Tag color={schema && !schema.entity_types.some((et) => et.name === type) ? 'red' : 'blue'}
+                        title={schema && !schema.entity_types.some((et) => et.name === type) ? '该类型不在 Schema 中，发布时将被门控过滤' : undefined}
+                    >
+                        {type}
+                    </Tag>
                 ),
         },
         {
@@ -349,17 +396,24 @@ export default function HumanReview({ projectId, onPrev }: Props) {
             title: '关系',
             dataIndex: 'relation_type',
             key: 'relation',
-            width: 140,
+            width: 160,
             render: (type: string, record: GraphEdge) =>
                 editingEdgeId === record.id ? (
-                    <Input
+                    <Select
                         size="small"
+                        showSearch
                         value={editEdgeData.relation_type}
-                        onChange={(e) => setEditEdgeData({ ...editEdgeData, relation_type: e.target.value })}
-                        style={{ width: 120 }}
+                        onChange={(v) => setEditEdgeData({ ...editEdgeData, relation_type: v })}
+                        options={(schema?.relation_types || []).map((rt) => ({ label: rt.name, value: rt.name }))}
+                        style={{ width: 140 }}
+                        placeholder="选择关系类型"
                     />
                 ) : (
-                    <Tag color="purple">{type}</Tag>
+                    <Tag color={schema && !schema.relation_types.some((rt) => rt.name === type) && type !== '下一段' ? 'red' : 'purple'}
+                        title={schema && !schema.relation_types.some((rt) => rt.name === type) && type !== '下一段' ? '该关系类型不在 Schema 中，发布时将被门控过滤' : undefined}
+                    >
+                        {type}
+                    </Tag>
                 ),
         },
         {

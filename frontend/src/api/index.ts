@@ -2,6 +2,7 @@
  * 后端 API 接口封装
  */
 import axios from 'axios';
+import { message } from 'antd';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
 
@@ -30,6 +31,34 @@ api.interceptors.request.use((config) => {
   Object.entries(headers).forEach(([k, v]) => config.headers.set(k, v));
   return config;
 });
+
+// 401 统一处理：各页面的"加载失败"无法让用户定位到鉴权问题，
+// 在这里给出唯一、明确的指引（key 去重避免并发请求连环弹窗）
+api.interceptors.response.use(
+  (res) => res,
+  (error) => {
+    if (error.response?.status === 401) {
+      message.error({
+        content: '访问未授权：请在右上角「系统配置 → 身份与访问」中填写正确的访问令牌',
+        key: 'auth-401',
+        duration: 5,
+      });
+    }
+    return Promise.reject(error);
+  }
+);
+
+// 供原生 fetch 流式调用复用的 401 检查
+const throwIfUnauthorized = (response: Response) => {
+  if (response.status === 401) {
+    message.error({
+      content: '访问未授权：请在「系统配置 → 身份与访问」中填写正确的访问令牌',
+      key: 'auth-401',
+      duration: 5,
+    });
+    throw new Error('访问未授权（401）');
+  }
+};
 
 // ===== 系统配置 =====
 export interface SystemConfig {
@@ -178,6 +207,7 @@ export const getProfileSummaryStream = async (
     const response = await fetch(`${API_BASE}/projects/${projectId}/schema/profile-summary?source=${source}`, {
       headers: authHeaders(),
     });
+    throwIfUnauthorized(response);
     if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
     if (!response.body) throw new Error('No response body');
     const reader = response.body.getReader();
@@ -212,6 +242,7 @@ export const chatWithSchemaStream = async (
       body: JSON.stringify({ messages, source }),
     });
 
+    throwIfUnauthorized(response);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }
@@ -273,6 +304,8 @@ export interface RunEstimate {
 
 export const estimateRun = (projectId: string) => api.get<RunEstimate>(`/projects/${projectId}/runs/estimate`);
 export const startRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs`, {});
+// 增量抽取：仅处理上次抽取后新增的文档，与既有草稿图谱合并
+export const startIncrementalRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs/incremental`, {});
 export const listRuns = (projectId: string) => api.get<Run[]>(`/projects/${projectId}/runs`);
 export const getRun = (projectId: string, runId: string) =>
   api.get<Run>(`/projects/${projectId}/runs/${runId}`);
@@ -319,6 +352,26 @@ export const searchEntities = (projectId: string, query: string, status = 'publi
   api.get<{ id: string; name: string; type: string }[]>(`/projects/${projectId}/graph/search`, { params: { query, status } });
 export const publishGraph = (projectId: string) => api.post(`/projects/${projectId}/graph/publish`);
 export const rejectGraph = (projectId: string) => api.post(`/projects/${projectId}/graph/reject`);
+
+// 发布门控预演：不修改数据，返回将被过滤的节点/边与原因
+export interface ValidationReport {
+  passed: boolean;
+  valid_node_count: number;
+  valid_edge_count: number;
+  violation_count: number;
+  violations: { kind: string; target_id: string; rule: string; message: string }[];
+  stats: {
+    total_nodes: number;
+    total_edges: number;
+    valid_nodes: number;
+    valid_edges: number;
+    rejected_nodes: number;
+    rejected_edges: number;
+  };
+}
+
+export const validateGraph = (projectId: string) =>
+  api.get<ValidationReport>(`/projects/${projectId}/graph/validate`);
 export const exportGraph = (projectId: string) =>
   api.get(`/projects/${projectId}/graph/export`, { responseType: 'blob' });
 
@@ -447,6 +500,7 @@ export const chatWithGraphStream = async (
       body: JSON.stringify(body),
     });
 
+    throwIfUnauthorized(response);
     if (!response.ok) {
       throw new Error(`HTTP error! status: ${response.status}`);
     }

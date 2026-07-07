@@ -1,7 +1,8 @@
 /**
  * 工作台页面 - 分步向导
+ * 选中项目与当前步骤持久化到 localStorage：刷新/切页回来不丢工作现场
  */
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Steps, Card, message } from 'antd';
 import {
     FolderOutlined,
@@ -16,6 +17,7 @@ import DocumentUpload from '../components/DocumentUpload';
 import SchemaEditor from '../components/SchemaEditor';
 import ExtractionRunner from '../components/ExtractionRunner';
 import HumanReview from '../components/HumanReview';
+import { listProjects } from '../api';
 
 const steps = [
     { title: '项目管理', icon: <FolderOutlined /> },
@@ -25,15 +27,51 @@ const steps = [
     { title: '人工复核', icon: <CheckCircleOutlined /> },
 ];
 
+const LS_PROJECT_ID = 'kg_workbench_project_id';
+const LS_PROJECT_NAME = 'kg_workbench_project_name';
+const LS_STEP = 'kg_workbench_step';
+
 export default function WorkbenchPage() {
-    const [currentStep, setCurrentStep] = useState(0);
-    const [projectId, setProjectId] = useState<string>('');
-    const [projectName, setProjectName] = useState<string>('');
+    const [currentStep, setCurrentStep] = useState(() => {
+        const saved = parseInt(localStorage.getItem(LS_STEP) || '0', 10);
+        return Number.isFinite(saved) && saved >= 0 && saved < steps.length ? saved : 0;
+    });
+    const [projectId, setProjectId] = useState<string>(localStorage.getItem(LS_PROJECT_ID) || '');
+    const [projectName, setProjectName] = useState<string>(localStorage.getItem(LS_PROJECT_NAME) || '');
+
+    // 恢复的项目可能已被删除：挂载时校验一次，失效则回到第 0 步
+    useEffect(() => {
+        if (!projectId) return;
+        listProjects().then((res) => {
+            const found = res.data.find((p) => p.id === projectId);
+            if (!found) {
+                message.info('上次选择的项目已不存在，请重新选择');
+                setProjectId('');
+                setProjectName('');
+                setCurrentStep(0);
+            } else if (found.name !== projectName) {
+                setProjectName(found.name);
+            }
+        }).catch(() => {
+            // 加载失败不清空现场（可能是网络/鉴权问题，401 已有全局提示）
+        });
+    }, []);
+
+    // 状态变化即持久化
+    useEffect(() => { localStorage.setItem(LS_STEP, String(currentStep)); }, [currentStep]);
+    useEffect(() => {
+        localStorage.setItem(LS_PROJECT_ID, projectId);
+        localStorage.setItem(LS_PROJECT_NAME, projectName);
+    }, [projectId, projectName]);
 
     const handleProjectSelect = (id: string, name: string) => {
+        // 切换到不同项目时，后续步骤的上下文已失效，回到文档上传步
+        if (id && projectId && id !== projectId && currentStep > 1) {
+            setCurrentStep(1);
+        }
         setProjectId(id);
         setProjectName(name);
-        message.success(`已选择项目: ${name}`);
+        if (id) message.success(`已选择项目: ${name}`);
     };
 
     const handleNext = () => {

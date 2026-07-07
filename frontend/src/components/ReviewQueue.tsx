@@ -123,13 +123,28 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
             width: 110,
             render: (_: any, record: ReviewItem) => (
                 <Space size="small">
-                    <Tooltip title="通过（留痕）">
-                        <Button
-                            size="small" type="primary" ghost icon={<CheckOutlined />}
-                            disabled={record.review_status === 'approved'}
-                            onClick={() => decide(record, 'approve')}
-                        />
-                    </Tooltip>
+                    {record.violations.length > 0 ? (
+                        // 复核通过 ≠ 门控放行：违规项即使人工通过，发布时仍会被确定性门控过滤。
+                        // 不给用户"通过了就能发布"的错觉。
+                        <Popconfirm
+                            title="该项存在门控违规"
+                            description="人工通过不会豁免门控：发布时该项仍会被过滤。建议先修正类型/Schema，或直接拒绝。仍要标记通过吗？"
+                            okText="仍然通过"
+                            onConfirm={() => decide(record, 'approve')}
+                        >
+                            <Tooltip title="通过（注意：存在门控违规）">
+                                <Button size="small" icon={<CheckOutlined />} disabled={record.review_status === 'approved'} />
+                            </Tooltip>
+                        </Popconfirm>
+                    ) : (
+                        <Tooltip title="通过（留痕）">
+                            <Button
+                                size="small" type="primary" ghost icon={<CheckOutlined />}
+                                disabled={record.review_status === 'approved'}
+                                onClick={() => decide(record, 'approve')}
+                            />
+                        </Tooltip>
+                    )}
                     <Popconfirm
                         title="拒绝并从草稿移除？"
                         description={record.kind === 'node' ? '关联关系会级联删除，操作会记入审计与反思案例' : '操作会记入审计与反思案例'}
@@ -175,8 +190,8 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                             <span>门控违规 <b style={{ color: '#cf1322' }}>{queue.with_violations}</b></span>
                             <span>证据未验证 <b style={{ color: '#d46b08' }}>{queue.unverified_evidence}</b></span>
                             <Button size="small" icon={<ReloadOutlined />} onClick={loadAll}>刷新</Button>
-                            <Button size="small" type={onlyPending ? 'primary' : 'default'} onClick={() => setOnlyPending(!onlyPending)}>
-                                {onlyPending ? '只看待复核' : '显示全部'}
+                            <Button size="small" onClick={() => setOnlyPending(!onlyPending)}>
+                                {onlyPending ? '显示已通过的项' : '隐藏已通过的项'}
                             </Button>
                         </Space>
                     }
@@ -221,7 +236,7 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                                 <Table
                                     columns={rejectedColumns}
                                     dataSource={rejected?.items || []}
-                                    rowKey={(_, i) => String(i)}
+                                    rowKey={(r: any) => `${r.ts}-${r.chunk_id}-${r.name}-${r.item_type}`}
                                     size="small"
                                     pagination={{ pageSize: 15 }}
                                 />

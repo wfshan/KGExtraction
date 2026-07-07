@@ -299,6 +299,13 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
         saveSchema(newSchema);
     };
 
+    // 失焦自动保存：静默 + key 去重，避免逐字段编辑时 toast 轰炸
+    const autoSave = () => {
+        saveSchema(schema);
+        message.success({ content: '已自动保存', key: 'schema-autosave', duration: 1 });
+    };
+
+    // 显式保存按钮：明确反馈
     const handleSave = () => {
         saveSchema(schema);
         message.success('Schema 已保存');
@@ -423,7 +430,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             placeholder="类型名称（如：人物）"
                                             value={et.name}
                                             onChange={(e) => updateEntityType(i, 'name', e.target.value)}
-                                            onBlur={handleSave}
+                                            onBlur={autoSave}
                                             style={{ width: 200 }}
                                         />
                                         <Popconfirm title="确定删除？" onConfirm={() => removeEntityType(i)}>
@@ -434,7 +441,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                         placeholder="语义定义（帮助模型理解该概念）"
                                         value={et.definition}
                                         onChange={(e) => updateEntityType(i, 'definition', e.target.value)}
-                                        onBlur={handleSave}
+                                        onBlur={autoSave}
                                     />
                                     <Input
                                         placeholder="示例实例（逗号分隔，如：张三, 李四）"
@@ -442,7 +449,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                         onChange={(e) =>
                                             updateEntityType(i, 'examples', e.target.value.split(',').map((s) => s.trim()).filter(Boolean))
                                         }
-                                        onBlur={handleSave}
+                                        onBlur={autoSave}
                                     />
                                 </Space>
                             </div>
@@ -473,7 +480,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             placeholder="关系名称（如：就职于）"
                                             value={rt.name}
                                             onChange={(e) => updateRelationType(i, 'name', e.target.value)}
-                                            onBlur={handleSave}
+                                            onBlur={autoSave}
                                             style={{ width: 200 }}
                                         />
                                         <span style={{ color: 'var(--gray-400)' }}>从</span>
@@ -482,7 +489,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             placeholder="源类型（可多选，空=不限）"
                                             value={constraintToArray(rt.source_entity_type)}
                                             onChange={(vals: string[]) => updateRelationType(i, 'source_entity_type', arrayToConstraint(vals))}
-                                            onBlur={handleSave}
+                                            onBlur={autoSave}
                                             options={schema.entity_types.map(et => ({ label: et.name, value: et.name }))}
                                             style={{ minWidth: 150 }}
                                             size="small"
@@ -493,7 +500,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             placeholder="目标类型（可多选，空=不限）"
                                             value={constraintToArray(rt.target_entity_type)}
                                             onChange={(vals: string[]) => updateRelationType(i, 'target_entity_type', arrayToConstraint(vals))}
-                                            onBlur={handleSave}
+                                            onBlur={autoSave}
                                             options={schema.entity_types.map(et => ({ label: et.name, value: et.name }))}
                                             style={{ minWidth: 150 }}
                                             size="small"
@@ -506,7 +513,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                         placeholder="语义定义"
                                         value={rt.definition}
                                         onChange={(e) => updateRelationType(i, 'definition', e.target.value)}
-                                        onBlur={handleSave}
+                                        onBlur={autoSave}
                                     />
                                 </Space>
                             </div>

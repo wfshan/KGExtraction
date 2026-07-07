@@ -16,6 +16,9 @@ export default function SystemConfig() {
     // 本地身份配置（不上传后端配置文件；令牌仅存浏览器 localStorage）
     const [operatorName, setOperatorNameState] = useState(getOperatorName());
     const [accessToken, setAccessTokenState] = useState(getAccessToken());
+    // 后端 PUT 是全量替换：必须保留 GET 到的完整配置，
+    // 提交时用表单值覆盖，否则未在表单中渲染的配置项会被静默重置为默认值
+    const [fullConfig, setFullConfig] = useState<SystemConfigType | null>(null);
 
     const withTip = (label: string, tip: string) => (
         <span>
@@ -31,6 +34,7 @@ export default function SystemConfig() {
         setLoading(true);
         try {
             const res = await getSystemConfig();
+            setFullConfig(res.data);
             form.setFieldsValue(res.data);
         } catch {
             message.error('加载配置失败');
@@ -45,7 +49,8 @@ export default function SystemConfig() {
             setLoading(true);
             setOperatorName(operatorName.trim());
             setAccessToken(accessToken.trim());
-            await updateSystemConfig(values as SystemConfigType);
+            // 完整配置 + 表单覆盖，避免未渲染字段被重置
+            await updateSystemConfig({ ...(fullConfig || {}), ...values } as SystemConfigType);
             message.success('配置已保存');
             setOpen(false);
         } catch {

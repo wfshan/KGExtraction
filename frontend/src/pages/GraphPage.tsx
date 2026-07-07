@@ -92,6 +92,9 @@ export default function GraphPage() {
     const [explorationMode, setExplorationMode] = useState(true); // 默认开启按需探索模式
     const [exploring, setExploring] = useState(false);
     const [showDocLayer, setShowDocLayer] = useState(false); // 文档结构层（片段锚点/「下一段」边）默认隐藏
+    // 图数据源：已发布 / 草稿。抽取完成但尚未发布时，已发布图为空——
+    // 不切换数据源的话，探索搜索永远空结果且无解释
+    const [graphSource, setGraphSource] = useState<'published' | 'draft'>('published');
 
     // Load projects
     useEffect(() => {
@@ -139,7 +142,7 @@ export default function GraphPage() {
             return;
         }
         try {
-            const res = await searchEntities(selectedProject, val);
+            const res = await searchEntities(selectedProject, val, graphSource);
             setSearchResults(res.data);
         } catch (e) {
             console.error(e);
@@ -149,7 +152,7 @@ export default function GraphPage() {
     const onSearchSelect = async (nodeId: string) => {
         setExploring(true);
         try {
-            const res = await getProjectSubgraph(selectedProject, nodeId, 1, 'published', 'both');
+            const res = await getProjectSubgraph(selectedProject, nodeId, 1, graphSource, 'both');
             mergeGraphData(res.data);
             setSearchQuery('');
             message.success('已添加节点到图谱');
@@ -181,7 +184,7 @@ export default function GraphPage() {
         setExploring(true);
         setContextMenu(null);
         try {
-            const res = await getProjectSubgraph(selectedProject, nodeId, 1, 'published', direction);
+            const res = await getProjectSubgraph(selectedProject, nodeId, 1, graphSource, direction);
             mergeGraphData(res.data);
             message.success('扩展成功');
         } catch (e) {
@@ -200,19 +203,27 @@ export default function GraphPage() {
             cyRef.current = null;
         }
 
-        // 如果不是探索模式，则加载全量（文档结构层按开关过滤）
+        // 如果不是探索模式，则加载全量（按所选数据源；文档结构层按开关过滤）
         if (!explorationMode) {
-            getGraph(selectedProject, 'published', showDocLayer).then((res) => {
-                const data = res.data.nodes?.length > 0 ? res.data : null;
-                if (data) {
-                    setGraph(data);
+            getGraph(selectedProject, graphSource, showDocLayer).then((res) => {
+                if (res.data.nodes?.length > 0) {
+                    setGraph(res.data);
+                } else if (graphSource === 'published') {
+                    // 已发布图为空（尚未发布）：透明回退到草稿并明确告知，而非静默偷换数据源
+                    getGraph(selectedProject, 'draft', showDocLayer).then((r) => {
+                        if (r.data.nodes?.length > 0) {
+                            message.info('该项目尚未发布图谱，已切换为草稿图数据');
+                            setGraphSource('draft');
+                        }
+                        setGraph(r.data);
+                    });
                 } else {
-                    getGraph(selectedProject, 'draft', showDocLayer).then((r) => setGraph(r.data));
+                    setGraph(res.data);
                 }
             });
         }
         getSchema(selectedProject).then((res) => setSchema(res.data)).catch(() => null);
-    }, [selectedProject, explorationMode, showDocLayer]);
+    }, [selectedProject, explorationMode, showDocLayer, graphSource]);
 
     // Build Cytoscape graph
     useEffect(() => {
@@ -518,9 +529,61 @@ export default function GraphPage() {
         setChatInput('');
         setChatLoading(true);
 
-        let currentAssistantMessage = '';
-        let recallBuffer = '';
-        let isParsingRecall = false;
+        // 缓冲式流解析：网络分块的边界是任意的，__RECALL_START__/__RECALL_END__
+        // 标记可能被截断在两个 chunk 之间。把原始流累积进缓冲区、每次从缓冲区整体
+        // 解析，避免半截标记漏进消息文本或召回信息丢失。
+        const RECALL_START = '__RECALL_START__';
+        const RECALL_END = '__RECALL_END__';
+        let streamBuffer = '';
+        let recallParsed = false;
+
+        const setRecallInfo = (info: any) => {
+            setChatMessages(prev => {
+                const newMsgs = [...prev];
+                const last = newMsgs[newMsgs.length - 1];
+                if (last && last.role === 'assistant') last.recallInfo = info;
+                return newMsgs;
+            });
+        };
+
+        const renderFromBuffer = () => {
+            let display = streamBuffer;
+            if (!recallParsed) {
+                const startIdx = streamBuffer.indexOf(RECALL_START);
+                if (startIdx !== -1) {
+                    const endIdx = streamBuffer.indexOf(RECALL_END, startIdx);
+                    if (endIdx !== -1) {
+                        // 完整标记：截出 JSON，拼接前后正文
+                        const jsonStr = streamBuffer.substring(startIdx + RECALL_START.length, endIdx);
+                        try {
+                            setRecallInfo(JSON.parse(jsonStr));
+                        } catch { /* 召回信息损坏时不阻塞正文 */ }
+                        streamBuffer = streamBuffer.substring(0, startIdx) + streamBuffer.substring(endIdx + RECALL_END.length);
+                        recallParsed = true;
+                        display = streamBuffer;
+                    } else {
+                        // 标记未闭合：只展示标记前的正文，等待后续 chunk
+                        display = streamBuffer.substring(0, startIdx);
+                    }
+                } else {
+                    // 缓冲区尾部可能是被截断的标记前缀（如 "__RECALL_ST"）：暂不展示这部分
+                    for (let keep = Math.min(RECALL_START.length - 1, streamBuffer.length); keep > 0; keep--) {
+                        if (streamBuffer.endsWith(RECALL_START.substring(0, keep))) {
+                            display = streamBuffer.substring(0, streamBuffer.length - keep);
+                            break;
+                        }
+                    }
+                }
+            }
+            setChatMessages((prev) => {
+                const newMsgs = [...prev];
+                const lastMsg = newMsgs[newMsgs.length - 1];
+                if (lastMsg && lastMsg.role === 'assistant') {
+                    lastMsg.content = display;
+                }
+                return newMsgs;
+            });
+        };
 
         // Handle Scope
         let contextPrefix = '';
@@ -540,63 +603,8 @@ export default function GraphPage() {
             selectedProject,
             contextPrefix + newMessage.content,
             (chunk: string) => {
-                // Metadata parsing
-                if (chunk.includes('__RECALL_START__')) {
-                    isParsingRecall = true;
-                    const startIdx = chunk.indexOf('__RECALL_START__');
-                    const leadingText = chunk.substring(0, startIdx);
-                    currentAssistantMessage += leadingText;
-                    
-                    const remaining = chunk.substring(startIdx + '__RECALL_START__'.length);
-                    if (remaining.includes('__RECALL_END__')) {
-                        const endIdx = remaining.indexOf('__RECALL_END__');
-                        const jsonStr = remaining.substring(0, endIdx);
-                        try {
-                            const info = JSON.parse(jsonStr);
-                            setChatMessages(prev => {
-                                const newMsgs = [...prev];
-                                const last = newMsgs[newMsgs.length - 1];
-                                if (last && last.role === 'assistant') last.recallInfo = info;
-                                return newMsgs;
-                            });
-                        } catch (e) {}
-                        isParsingRecall = false;
-                        currentAssistantMessage += remaining.substring(endIdx + '__RECALL_END__'.length);
-                    } else {
-                        recallBuffer = remaining;
-                    }
-                } else if (isParsingRecall) {
-                    if (chunk.includes('__RECALL_END__')) {
-                        const endIdx = chunk.indexOf('__RECALL_END__');
-                        recallBuffer += chunk.substring(0, endIdx);
-                        try {
-                            const info = JSON.parse(recallBuffer);
-                            setChatMessages(prev => {
-                                const newMsgs = [...prev];
-                                const last = newMsgs[newMsgs.length - 1];
-                                if (last && last.role === 'assistant') last.recallInfo = info;
-                                return newMsgs;
-                            });
-                        } catch (e) {}
-                        isParsingRecall = false;
-                        currentAssistantMessage += chunk.substring(endIdx + '__RECALL_END__'.length);
-                    } else {
-                        recallBuffer += chunk;
-                    }
-                } else {
-                    currentAssistantMessage += chunk;
-                }
-
-                if (!isParsingRecall) {
-                    setChatMessages((prev) => {
-                        const newMsgs = [...prev];
-                        const lastMsg = newMsgs[newMsgs.length - 1];
-                        if (lastMsg && lastMsg.role === 'assistant') {
-                            lastMsg.content = currentAssistantMessage;
-                        }
-                        return newMsgs;
-                    });
-                }
+                streamBuffer += chunk;
+                renderFromBuffer();
             },
             (error: any) => {
                 message.error(`问图失败: ${error.message}`);
@@ -639,6 +647,16 @@ export default function GraphPage() {
                         style={{ width: 200 }}
                         options={projects.map((p) => ({ label: p.name, value: p.id }))}
                     />
+                    <Select
+                        value={graphSource}
+                        onChange={(v) => setGraphSource(v)}
+                        style={{ width: 110 }}
+                        options={[
+                            { label: '📗 已发布图', value: 'published' },
+                            { label: '📝 草稿图', value: 'draft' },
+                        ]}
+                        title="切换查看已发布图谱或复核中的草稿图谱"
+                    />
                 </div>
 
                 <div style={{
@@ -675,12 +693,14 @@ export default function GraphPage() {
                             ))}
                         </AutoComplete>
                     )}
-                    <Checkbox
-                        checked={explorationMode}
-                        onChange={e => setExplorationMode(e.target.checked)}
-                    >
-                        探索模式
-                    </Checkbox>
+                    <Tooltip title="开启：从空画布开始，搜索并逐个添加实体、按需展开邻居（适合大图）。关闭：一次性加载全部节点。">
+                        <Checkbox
+                            checked={explorationMode}
+                            onChange={e => setExplorationMode(e.target.checked)}
+                        >
+                            探索模式
+                        </Checkbox>
+                    </Tooltip>
                     {!explorationMode && (
                         <Checkbox
                             checked={showDocLayer}
@@ -746,7 +766,13 @@ export default function GraphPage() {
                             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
                             pointerEvents: 'none', background: 'rgba(255,255,255,0.6)'
                         }}>
-                            <Empty description={explorationMode ? "探索模式：请在左上角搜索并添加实体" : "暂无图谱数据，请先完成抽取并发布"} />
+                            <Empty description={
+                                explorationMode
+                                    ? `探索模式（${graphSource === 'published' ? '已发布图' : '草稿图'}）：请在左上角搜索框输入实体名并选择，逐个添加到画布`
+                                    : (graphSource === 'published'
+                                        ? "当前已发布图为空。若已完成抽取，请到人工复核页发布，或在左上角切换为「草稿图」查看"
+                                        : "草稿图为空，请先完成文档抽取")
+                            } />
                         </div>
                     )}
 
