@@ -107,15 +107,31 @@ async def run_extraction_pipeline_sync(
     initial_stats: Optional[Dict] = None,
     skip_chunks: int = 0,
     only_doc_ids: Optional[List[str]] = None,
+    plan=None,
 ):
     """
     执行完整的抽取工作流（异步协程并发）。
 
     only_doc_ids 非空时仅处理这些文档的分片（增量摄入 / delta merge），
     新抽取的实体会与既有草稿图谱按 (name, entity_type) 合并，不重建全图。
+
+    plan（v3）：抽取计划。第①步中执行器把 Plan 解析回等价的 config 覆盖参数，
+    使执行路径「经过 Plan」但外部行为与直接读 config 完全一致（round-trip 保证）。
+    真正的「按 Plan 遍历原语执行」在第②步落地。
     """
     project_dir = get_project_dir(project_id)
     config = load_config()
+
+    # v3：若提供 Plan，用其解析出的参数覆盖 config（不改动下方任何逐项逻辑）
+    if plan is not None:
+        try:
+            from services.planning import plan_to_execution_params
+            overrides = plan_to_execution_params(plan)
+            if overrides:
+                config = config.model_copy(update=overrides)
+                print(f"[Pipeline] 已按 Plan {getattr(plan, 'plan_id', '?')} 覆盖抽取参数: {overrides}")
+        except Exception as e:
+            print(f"[Pipeline] 解析 Plan 参数失败，回退 config: {e}")
 
     # 清除可能导致连接问题的代理环境变量
     for var in ["http_proxy", "https_proxy", "HTTP_PROXY", "HTTPS_PROXY",

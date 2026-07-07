@@ -44,6 +44,19 @@ def _update_run(project_id: str, run_id: str, **updates):
     _save_runs(project_id, runs)
 
 
+@router.get("/{project_id}/extraction-plan")
+async def get_extraction_plan(project_id: str):
+    """返回当前项目的默认抽取计划（Plan，v3）。
+
+    第①步：Plan 由 config + Schema 反编译而来，等价于当前固定流水线，
+    供前端展示「本次抽取打算怎么抽」。第③步将支持规划器生成与人工确认。
+    """
+    from services.planning import compile_default_plan, validate_plan
+    plan = compile_default_plan(project_id)
+    ok, errors = validate_plan(plan)
+    return {"plan": plan.model_dump(), "valid": ok, "errors": errors}
+
+
 @router.get("/{project_id}/runs/estimate")
 async def estimate_run(project_id: str):
     """启动前成本预估：按分片数 × 启用功能 × 平均 token 估算调用量与费用（确定性，不调用 LLM）。"""
@@ -120,10 +133,14 @@ async def _execute_extraction_async(project_id: str, run_id: str):
     print(f"[Extraction] 开始抽取: project={project_id}, run={run_id}")
     try:
         from services.extraction.graph import run_extraction_pipeline_sync
+        from services.planning import compile_default_plan
+        # v3：编译默认 Plan（等价于当前 config）后执行——执行路径经过 Plan，行为不变
+        plan = compile_default_plan(project_id)
         await run_extraction_pipeline_sync(
             project_id=project_id,
             run_id=run_id,
             progress_callback=lambda **kw: _update_run(project_id, run_id, **kw),
+            plan=plan,
         )
         # 全量抽取完成：记录所有已解析文档为已处理（供增量摄入计算 delta）
         try:
@@ -227,11 +244,14 @@ async def _execute_incremental_async(project_id: str, run_id: str, only_doc_ids:
     print(f"[Incremental] 开始增量抽取: project={project_id}, run={run_id}, docs={only_doc_ids}")
     try:
         from services.extraction.graph import run_extraction_pipeline_sync
+        from services.planning import compile_default_plan
+        plan = compile_default_plan(project_id)
         await run_extraction_pipeline_sync(
             project_id=project_id,
             run_id=run_id,
             progress_callback=lambda **kw: _update_run(project_id, run_id, **kw),
             only_doc_ids=only_doc_ids,
+            plan=plan,
         )
         # 记录已处理文档
         processed = _load_processed_docs(project_id)
@@ -295,13 +315,17 @@ async def resume_run(project_id: str, run_id: str):
     import threading
     import asyncio
     
+    from services.planning import compile_default_plan
+    resume_plan = compile_default_plan(project_id)
+
     def _run_resume_in_thread():
         asyncio.run(run_extraction_pipeline_sync(
             project_id=project_id,
             run_id=run_id,
             progress_callback=lambda **kw: _update_run(project_id, run_id, **kw),
             initial_stats=run.stats,
-            skip_chunks=run.stats.get("processed_chunks", 0)
+            skip_chunks=run.stats.get("processed_chunks", 0),
+            plan=resume_plan,
         ))
 
     t = threading.Thread(
@@ -355,13 +379,17 @@ async def restart_run(project_id: str, run_id: str):
     import threading
     import asyncio
     
+    from services.planning import compile_default_plan
+    restart_plan = compile_default_plan(project_id)
+
     def _run_restart_in_thread():
         asyncio.run(run_extraction_pipeline_sync(
             project_id=project_id,
             run_id=run_id,
             progress_callback=lambda **kw: _update_run(project_id, run_id, **kw),
             initial_stats=run.stats,
-            skip_chunks=0
+            skip_chunks=0,
+            plan=restart_plan,
         ))
 
     t = threading.Thread(

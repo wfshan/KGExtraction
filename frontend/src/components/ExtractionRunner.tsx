@@ -14,9 +14,25 @@ import {
 } from '@ant-design/icons';
 import {
     startRun, startIncrementalRun, listRuns, getRun, resumeRun, restartRun, getRunLogs,
-    listDocuments, getSchema, updateDocument, estimateRun
+    listDocuments, getSchema, updateDocument, estimateRun, getExtractionPlan
 } from '../api';
-import type { Run, Document, SchemaConfig, RunEstimate } from '../api';
+import type { Run, Document, SchemaConfig, RunEstimate, ExtractionPlan } from '../api';
+
+// 步骤原语中文名（对应设计文档 6.5 步骤库）
+const PRIMITIVE_LABEL: Record<string, string> = {
+    segment: '文档分片', select_scope: '范围选材',
+    extract_surface: '表面抽取(NER)', normalize_value: '值标准化',
+    induce_from_cases: '案例归纳', aggregate_then_induce: '聚合归纳',
+    extract_combined: '合并抽取(实体+关系)', extract_relations_intra: '片段内关系',
+    infer_relations_cross: '跨片段关系', link_to_existing: '存量链接',
+    schema_driven_linking: 'Schema驱动链接', resolve_surface: '表面消歧',
+    merge_semantic: '语义归并', canonicalize_predicate: '谓词规范化',
+    validate_type: '类型校验', validate_structure: '结构校验',
+    verify_evidence_verbatim: '逐字证据校验', verify_faithfulness: '归纳忠实度校验',
+    self_correct: '自我修正', post_correct: '后验本体修正',
+    build_hierarchy: '层级构建', detect_conflict: '冲突检测',
+    add_document_structure: '文档结构层',
+};
 
 interface Props {
     projectId: string;
@@ -39,6 +55,24 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
     const [docTargets, setDocTargets] = useState<Record<string, { entities: string[]; relations: string[] }>>({});
     const [savingTargets, setSavingTargets] = useState(false);
     const [configVisible, setConfigVisible] = useState(false);
+
+    // v3 抽取计划（只读展示）
+    const [planVisible, setPlanVisible] = useState(false);
+    const [plan, setPlan] = useState<ExtractionPlan | null>(null);
+    const [planLoading, setPlanLoading] = useState(false);
+
+    const openPlan = async () => {
+        setPlanVisible(true);
+        setPlanLoading(true);
+        try {
+            const res = await getExtractionPlan(projectId);
+            setPlan(res.data.plan);
+        } catch {
+            message.error('加载抽取计划失败');
+        } finally {
+            setPlanLoading(false);
+        }
+    };
 
     // Staleness check
     useEffect(() => {
@@ -423,16 +457,26 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
 
                     {renderTargetConfig()}
 
-                    <Button
-                        type="primary"
-                        size="large"
-                        icon={<ThunderboltOutlined />}
-                        loading={loading || savingTargets}
-                        onClick={handleStart}
-                        style={{ height: 48, fontSize: 16, paddingInline: 32 }}
-                    >
-                        启动抽取
-                    </Button>
+                    <Space>
+                        <Button
+                            type="primary"
+                            size="large"
+                            icon={<ThunderboltOutlined />}
+                            loading={loading || savingTargets}
+                            onClick={handleStart}
+                            style={{ height: 48, fontSize: 16, paddingInline: 32 }}
+                        >
+                            启动抽取
+                        </Button>
+                        <Button
+                            size="large"
+                            icon={<FileTextOutlined />}
+                            onClick={openPlan}
+                            style={{ height: 48 }}
+                        >
+                            查看抽取计划
+                        </Button>
+                    </Space>
                 </div>
             ) : (
                 <div className="extraction-status fade-in">
@@ -622,6 +666,67 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                     )}
                 </div>
             )}
+
+            {/* v3 抽取计划查看（只读） */}
+            <Modal
+                title="🧬 本次抽取计划（Plan）"
+                open={planVisible}
+                onCancel={() => setPlanVisible(false)}
+                footer={[<Button key="close" onClick={() => setPlanVisible(false)}>关闭</Button>]}
+                width={640}
+            >
+                <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="抽取流程由本体编译而来"
+                    description="当前为默认计划（等价于系统配置的固定流程）。后续版本将支持大模型按本体规划专用流程，并让抽象知识（概念/规则）走不同的归纳与校验步骤。"
+                />
+                {planLoading ? (
+                    <div style={{ textAlign: 'center', padding: 24 }}>加载中...</div>
+                ) : plan ? (
+                    <div>
+                        <Descriptions size="small" column={2} style={{ marginBottom: 12 }}>
+                            <Descriptions.Item label="计划来源">{plan.source === 'planner-default' ? '默认反编译' : plan.source}</Descriptions.Item>
+                            <Descriptions.Item label="Schema 版本">v{plan.schema_version}</Descriptions.Item>
+                            <Descriptions.Item label="校验" span={2}>
+                                {plan.validated ? <Tag color="green">DAG 合法</Tag> : <Tag color="red">校验未通过</Tag>}
+                            </Descriptions.Item>
+                        </Descriptions>
+
+                        <div style={{ fontWeight: 600, margin: '8px 0' }}>知识类型（抽象度）</div>
+                        <Space wrap style={{ marginBottom: 16 }}>
+                            {Object.values(plan.knowledge_types).map((kt) => (
+                                <Tag key={kt.name} color={kt.abstractness === 'inductive' ? 'purple' : kt.abstractness === 'normalized' ? 'geekblue' : 'blue'}>
+                                    {kt.name}
+                                    <span style={{ opacity: 0.6, marginLeft: 4 }}>
+                                        {kt.abstractness === 'surface' ? '表面' : kt.abstractness === 'normalized' ? '标准化' : '归纳'}
+                                    </span>
+                                </Tag>
+                            ))}
+                            {Object.keys(plan.knowledge_types).length === 0 && <span style={{ color: 'var(--gray-400)' }}>（未定义实体类型）</span>}
+                        </Space>
+
+                        <div style={{ fontWeight: 600, margin: '8px 0' }}>抽取步骤（{plan.steps.length}）</div>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                            {plan.steps.map((s, i) => (
+                                <div key={s.step_id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '8px 12px', background: 'var(--gray-50, #fafafa)', borderRadius: 6 }}>
+                                    <Tag color="blue" style={{ margin: 0 }}>{i + 1}</Tag>
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 500 }}>
+                                            {PRIMITIVE_LABEL[s.primitive] || s.primitive}
+                                            {s.targets.length > 0 && <span style={{ color: 'var(--gray-400)', fontSize: 12, marginLeft: 6 }}>[{s.targets.join(', ')}]</span>}
+                                        </div>
+                                        {s.reason && <div style={{ fontSize: 12, color: 'var(--gray-500)' }}>{s.reason}</div>}
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                ) : (
+                    <div style={{ color: 'var(--gray-400)' }}>暂无计划</div>
+                )}
+            </Modal>
         </Card>
     );
 }

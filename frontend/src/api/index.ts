@@ -303,6 +303,26 @@ export interface RunEstimate {
 }
 
 export const estimateRun = (projectId: string) => api.get<RunEstimate>(`/projects/${projectId}/runs/estimate`);
+
+// v3：抽取计划（Plan）——本体编译出的抽取流程，第①步为默认反编译计划（只读展示）
+export interface ExtractionStep {
+  step_id: string;
+  primitive: string;
+  targets: string[];
+  params: Record<string, any>;
+  depends_on: string[];
+  reason: string;
+}
+export interface ExtractionPlan {
+  plan_id: string;
+  schema_version: number;
+  source: string;
+  validated: boolean;
+  knowledge_types: Record<string, { name: string; abstractness: string; evidence_mode: string; identity_by: string }>;
+  steps: ExtractionStep[];
+}
+export const getExtractionPlan = (projectId: string) =>
+  api.get<{ plan: ExtractionPlan; valid: boolean; errors: string[] }>(`/projects/${projectId}/extraction-plan`);
 export const startRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs`, {});
 // 增量抽取：仅处理上次抽取后新增的文档，与既有草稿图谱合并
 export const startIncrementalRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs/incremental`, {});

@@ -25,21 +25,40 @@ if ! command -v node &> /dev/null; then
     exit 1
 fi
 
+# 创建并激活 Python 虚拟环境
+echo ""
+echo "🐍 创建 Python 虚拟环境..."
+cd "$BACKEND_DIR"
+VENV_DIR="$BACKEND_DIR/.venv"
+if [ ! -d "$VENV_DIR" ]; then
+    # 优先使用 Python 3.11（兼容性好），回退到系统 python3
+    if [ -x "/Users/wfshan/anaconda3/envs/py311/bin/python3" ]; then
+        PYTHON_BIN="/Users/wfshan/anaconda3/envs/py311/bin/python3"
+    else
+        PYTHON_BIN="python3"
+    fi
+    echo "   使用 Python: $($PYTHON_BIN --version)"
+    "$PYTHON_BIN" -m venv "$VENV_DIR"
+    echo "✅ 虚拟环境已创建: $VENV_DIR"
+else
+    echo "✅ 虚拟环境已存在，跳过创建"
+fi
+source "$VENV_DIR/bin/activate"
+
 # 安装后端依赖
 echo ""
 echo "📦 安装后端依赖..."
-cd "$BACKEND_DIR"
 set +e
-pip3 install -r requirements.txt
+pip install -r requirements.txt
 INSTALL_EXIT_CODE=$?
 if [ $INSTALL_EXIT_CODE -ne 0 ]; then
     echo "⚠️  默认 pip 源安装失败，尝试使用官方 PyPI 源..."
-    pip3 install -r requirements.txt --index-url https://pypi.org/simple
+    pip install -r requirements.txt --index-url https://pypi.org/simple
     INSTALL_EXIT_CODE=$?
 fi
 if [ $INSTALL_EXIT_CODE -ne 0 ]; then
     echo "⚠️  官方 PyPI 安装失败，尝试使用清华镜像..."
-    pip3 install -r requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
+    pip install -r requirements.txt --index-url https://pypi.tuna.tsinghua.edu.cn/simple
     INSTALL_EXIT_CODE=$?
 fi
 set -e
