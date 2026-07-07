@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
     Select, Tag, Descriptions, Empty, Space, Button, Checkbox, message, Badge,
     Collapse, Spin, Typography, Drawer, Input, List, Avatar, Popconfirm, Tooltip, InputNumber,
-    AutoComplete, Menu
+    AutoComplete, Menu, Alert
 } from 'antd';
 import {
     FullscreenOutlined, FullscreenExitOutlined, ExportOutlined,
@@ -19,7 +19,8 @@ import cytoscape from 'cytoscape';
 import type { Core, EventObject } from 'cytoscape';
 import {
     listProjects, getGraph, getSchema, exportGraph, getChunksByIds, chatWithGraphStream,
-    getChatHistory, clearChatHistory, searchEntities, getProjectSubgraph
+    getChatHistory, clearChatHistory, searchEntities, getProjectSubgraph,
+    buildCommunities, getCommunities
 } from '../api';
 import type {
     Project, GraphData, SchemaConfig, ChunkContent,
@@ -83,6 +84,8 @@ export default function GraphPage() {
     const [graphRagMaxDegree, setGraphRagMaxDegree] = useState<number>(2);
     const [graphRagMaxStartEntities, setGraphRagMaxStartEntities] = useState<number>(5);
     const [graphRagMode, setGraphRagMode] = useState<string>('auto');
+    const [communityCount, setCommunityCount] = useState<number>(0);
+    const [buildingCommunity, setBuildingCommunity] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
 
     // Exploration State
@@ -125,6 +128,34 @@ export default function GraphPage() {
             message.success('对话记录已清空');
         } catch (error) {
             message.error('清空失败');
+        }
+    };
+
+    // 社区摘要：global 问答模式的前置依赖。加载已构建数量，供 UI 判断是否需要提示构建
+    const loadCommunityCount = async () => {
+        if (!selectedProject) { setCommunityCount(0); return; }
+        try {
+            const res = await getCommunities(selectedProject);
+            setCommunityCount(res.data.communities?.length || 0);
+        } catch { setCommunityCount(0); }
+    };
+    useEffect(() => { loadCommunityCount(); }, [selectedProject]);
+
+    const handleBuildCommunities = async () => {
+        if (!selectedProject) return;
+        setBuildingCommunity(true);
+        try {
+            const res = await buildCommunities(selectedProject, 3);
+            if (res.data.error) {
+                message.warning(res.data.error);
+            } else {
+                message.success(`已构建 ${res.data.communities} 个社区摘要（检测到 ${res.data.total_detected} 个）`);
+                await loadCommunityCount();
+            }
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '社区摘要构建失败（需已发布图谱）');
+        } finally {
+            setBuildingCommunity(false);
         }
     };
 
@@ -1121,6 +1152,29 @@ export default function GraphPage() {
                                 style={{ width: 72 }}
                             />
                         </Space>
+                        {/* 全局摘要模式依赖社区摘要，未构建时给出构建入口，避免"选了没反应" */}
+                        {(graphRagMode === 'global' || graphRagMode === 'auto') && (
+                            communityCount > 0 ? (
+                                <Text type="secondary" style={{ fontSize: 12 }}>
+                                    ✅ 已构建 {communityCount} 个社区摘要，全局主题问答可用
+                                    <Button type="link" size="small" loading={buildingCommunity} onClick={handleBuildCommunities}>重建</Button>
+                                </Text>
+                            ) : (
+                                <Alert
+                                    type="warning"
+                                    showIcon
+                                    style={{ fontSize: 12 }}
+                                    message={
+                                        <Space size={4} wrap>
+                                            <span>{graphRagMode === 'global' ? '全局摘要模式需先构建社区摘要' : '如需全局主题问答，建议先构建社区摘要'}（需已发布图谱）</span>
+                                            <Button type="primary" size="small" loading={buildingCommunity} onClick={handleBuildCommunities}>
+                                                构建社区摘要
+                                            </Button>
+                                        </Space>
+                                    }
+                                />
+                            )
+                        )}
                     </Space>
                 </div>
                 <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', background: '#fff' }}>

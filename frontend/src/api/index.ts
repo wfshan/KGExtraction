@@ -465,6 +465,81 @@ export interface ChunkContent {
 export const getChunksByIds = (projectId: string, chunkIds: string[]) =>
   api.post<ChunkContent[]>(`/projects/${projectId}/chunks`, { chunk_ids: chunkIds });
 
+// ===== 知识治理与演进（governance） =====
+// 这些操作 LLM 密集，超时放宽到 5 分钟
+
+// --- 融合与精炼（作用于草稿图） ---
+export const clusterEntities = (projectId: string, useLlm = true) =>
+  api.post(`/projects/${projectId}/graph/cluster-entities`, { use_llm: useLlm }, { timeout: 300000 });
+export const canonicalizeRelations = (projectId: string) =>
+  api.post(`/projects/${projectId}/graph/canonicalize-relations`, {}, { timeout: 300000 });
+export const postCorrectGraph = (projectId: string) =>
+  api.post(`/projects/${projectId}/graph/post-correct`, {}, { timeout: 300000 });
+export const fuseGraph = (projectId: string, opts?: { do_entity_clustering?: boolean; do_relation_canonicalize?: boolean; do_post_correction?: boolean; use_llm?: boolean }) =>
+  api.post(`/projects/${projectId}/graph/fuse`, opts || {}, { timeout: 600000 });
+
+// --- 社区摘要（作用于已发布图，供 global 问答模式使用） ---
+export interface Community {
+  id: number;
+  size: number;
+  node_ids: string[];
+  title: string;
+  summary: string;
+}
+export const buildCommunities = (projectId: string, minSize = 3) =>
+  api.post<{ communities: number; total_detected: number; error?: string }>(
+    `/projects/${projectId}/graph/communities`, null, { params: { min_size: minSize }, timeout: 300000 });
+export const getCommunities = (projectId: string) =>
+  api.get<{ communities: Community[] }>(`/projects/${projectId}/graph/communities`);
+
+// --- 质量评测 ---
+export interface Mine1Result {
+  benchmark: string;
+  sampled_chunks: number;
+  total_facts: number;
+  supported_facts: number;
+  retention_rate: number;
+  error?: string;
+}
+export const runMine1 = (projectId: string, sampleSize = 10, status = 'draft') =>
+  api.post<Mine1Result>(`/projects/${projectId}/benchmark/mine1`, null, { params: { sample_size: sampleSize, status }, timeout: 300000 });
+
+// --- Schema 缺口检测与版本化演化 ---
+export interface SchemaGaps {
+  missing_entity_types: { name: string; count: number; examples: string[] }[];
+  missing_relation_types: { name: string; count: number; source_entity_type: string; target_entity_type: string; examples: string[] }[];
+  fallback_chunk_count: number;
+  rejected_total: number;
+  has_gaps: boolean;
+}
+export const getSchemaGaps = (projectId: string) => api.get<SchemaGaps>(`/projects/${projectId}/schema/gaps`);
+export const previewSchemaEvolve = (projectId: string) =>
+  api.post<SchemaConfig>(`/projects/${projectId}/schema/evolve/preview`, {}, { timeout: 300000 });
+export const applySchemaEvolve = (projectId: string, schema: SchemaConfig, note: string) =>
+  api.post<{ version: number; entity_types: number; relation_types: number }>(
+    `/projects/${projectId}/schema/evolve/apply`, { schema_config: schema, note });
+export interface SchemaVersion {
+  version: number;
+  created_at: string;
+  note: string;
+  entity_types: number;
+  relation_types: number;
+}
+export const getSchemaVersions = (projectId: string) =>
+  api.get<{ versions: SchemaVersion[] }>(`/projects/${projectId}/schema/versions`);
+
+// --- 反思案例库 ---
+export interface ReflectionCase {
+  kind: string;
+  action: string;
+  before: Record<string, any>;
+  after: Record<string, any>;
+  note: string;
+  ts: string;
+}
+export const getReflectionCases = (projectId: string, limit = 50) =>
+  api.get<{ total: number; cases: ReflectionCase[] }>(`/projects/${projectId}/reflection/cases`, { params: { limit } });
+
 // ===== 健康检查 =====
 export const healthCheck = () => api.get('/health');
 

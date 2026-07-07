@@ -19,6 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { getGraph, publishGraph, rejectGraph, updateNode, deleteNode, updateEdge, deleteEdge, validateGraph, getSchema } from '../api';
 import type { GraphData, GraphNode, GraphEdge, SchemaConfig } from '../api';
 import ReviewQueue from './ReviewQueue';
+import GovernancePanel from './GovernancePanel';
 
 interface Props {
     projectId: string;
@@ -561,6 +562,11 @@ export default function HumanReview({ projectId, onPrev }: Props) {
                         key: 'review',
                         label: '📋 复核队列（增量）',
                         children: <ReviewQueue projectId={projectId} onChanged={loadGraph} />,
+                    },
+                    {
+                        key: 'governance',
+                        label: '🧪 融合与评测',
+                        children: <GovernancePanel projectId={projectId} onChanged={loadGraph} />,
                     },
                     {
                         key: 'nodes',

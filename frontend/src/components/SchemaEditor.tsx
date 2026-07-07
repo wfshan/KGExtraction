@@ -7,13 +7,15 @@ import {
 } from 'antd';
 import {
     PlusOutlined, DeleteOutlined, BulbOutlined, TagOutlined, SwapOutlined, MessageOutlined, RobotOutlined, UserOutlined, SendOutlined,
-    DownOutlined, RightOutlined,
+    DownOutlined, RightOutlined, NodeExpandOutlined, HistoryOutlined,
 } from '@ant-design/icons';
+import { Tag, Descriptions, Table, Tooltip, Alert, Divider } from 'antd';
 import {
-    getSchema, updateSchema, suggestSchema, getSchemaSources, getProfileSummaryStream, chatWithSchemaStream, generateSchemaFromChat, getRunLogs
+    getSchema, updateSchema, suggestSchema, getSchemaSources, getProfileSummaryStream, chatWithSchemaStream, generateSchemaFromChat, getRunLogs,
+    getSchemaGaps, previewSchemaEvolve, applySchemaEvolve, getSchemaVersions,
 } from '../api';
 import type {
-    SchemaConfig, EntityType, RelationType, SchemaSource,
+    SchemaConfig, EntityType, RelationType, SchemaSource, SchemaGaps, SchemaVersion,
 } from '../api';
 
 const { Text } = Typography;
@@ -62,6 +64,15 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
     const [availableSources, setAvailableSources] = useState<SchemaSource[]>([]);
     const [selectedSource, setSelectedSource] = useState<string>('');
     const selectedSourceRef = useRef<string>('auto');
+
+    // Schema 演化（缺口检测 → 诱导 → 版本化）
+    const [evolveOpen, setEvolveOpen] = useState(false);
+    const [gaps, setGaps] = useState<SchemaGaps | null>(null);
+    const [gapsLoading, setGapsLoading] = useState(false);
+    const [evolvePreview, setEvolvePreview] = useState<SchemaConfig | null>(null);
+    const [previewLoading, setPreviewLoading] = useState(false);
+    const [applying, setApplying] = useState(false);
+    const [versions, setVersions] = useState<SchemaVersion[]>([]);
 
     useEffect(() => {
         loadSchema();
@@ -311,6 +322,52 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
         message.success('Schema 已保存');
     };
 
+    // ===== Schema 演化 =====
+    const openEvolve = async () => {
+        setEvolveOpen(true);
+        setEvolvePreview(null);
+        setGapsLoading(true);
+        try {
+            const [g, v] = await Promise.all([getSchemaGaps(projectId), getSchemaVersions(projectId)]);
+            setGaps(g.data);
+            setVersions(v.data.versions);
+        } catch {
+            message.error('检测缺口失败，请确认已完成抽取');
+        } finally {
+            setGapsLoading(false);
+        }
+    };
+
+    const doPreviewEvolve = async () => {
+        setPreviewLoading(true);
+        try {
+            const res = await previewSchemaEvolve(projectId);
+            setEvolvePreview(res.data);
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '生成演化预览失败');
+        } finally {
+            setPreviewLoading(false);
+        }
+    };
+
+    const doApplyEvolve = async () => {
+        if (!evolvePreview) return;
+        setApplying(true);
+        try {
+            const res = await applySchemaEvolve(projectId, evolvePreview, '缺口诱导演化');
+            message.success(`已应用为 Schema v${res.data.version}`);
+            setSchema(evolvePreview);
+            setEvolvePreview(null);
+            const [g, v] = await Promise.all([getSchemaGaps(projectId), getSchemaVersions(projectId)]);
+            setGaps(g.data);
+            setVersions(v.data.versions);
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '应用失败');
+        } finally {
+            setApplying(false);
+        }
+    };
+
     return (
         <Card
             title="🧩 Schema 配置"
@@ -330,6 +387,11 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                     >
                         智能建议
                     </Button>
+                    <Tooltip title="根据抽取结果检测 Schema 未覆盖的高频类型，诱导补全并版本化">
+                        <Button onClick={openEvolve} icon={<NodeExpandOutlined />}>
+                            缺口演化
+                        </Button>
+                    </Tooltip>
                     <Button onClick={handleSave}>保存</Button>
                     <Button
                         type="primary"
@@ -641,6 +703,107 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                         />
                     </Space.Compact>
                 </div>
+            </Drawer>
+
+            {/* Schema 缺口演化 Drawer */}
+            <Drawer
+                title={<span><NodeExpandOutlined /> Schema 缺口检测与演化</span>}
+                open={evolveOpen}
+                onClose={() => setEvolveOpen(false)}
+                width={640}
+            >
+                <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="数据驱动的 Schema 演化"
+                    description="系统对比抽取结果与当前 Schema，找出未覆盖的高频类型（含抽取时被规则拒绝的 out-of-schema 类型），诱导补全并版本化。让 Schema 从一次性静态升级为可治理演化。"
+                />
+
+                <Spin spinning={gapsLoading} tip="检测缺口中...">
+                    {gaps && !gaps.has_gaps && (
+                        <Empty description="未检测到 Schema 缺口，当前 Schema 已覆盖抽取出的类型" />
+                    )}
+
+                    {gaps && gaps.has_gaps && (
+                        <>
+                            {gaps.rejected_total > 0 && (
+                                <Alert type="warning" showIcon style={{ marginBottom: 12 }}
+                                    message={`抽取阶段有 ${gaps.rejected_total} 项因类型不在 Schema 中被拒绝——很可能是应补充的缺口`} />
+                            )}
+                            {gaps.missing_entity_types.length > 0 && (
+                                <div style={{ marginBottom: 12 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 6 }}>缺失实体类型</div>
+                                    <Space wrap>
+                                        {gaps.missing_entity_types.map((g) => (
+                                            <Tooltip key={g.name} title={`示例：${g.examples.join('、') || '—'}`}>
+                                                <Tag color="blue">{g.name} ×{g.count}</Tag>
+                                            </Tooltip>
+                                        ))}
+                                    </Space>
+                                </div>
+                            )}
+                            {gaps.missing_relation_types.length > 0 && (
+                                <div style={{ marginBottom: 12 }}>
+                                    <div style={{ fontWeight: 600, marginBottom: 6 }}>缺失关系类型</div>
+                                    <Space wrap>
+                                        {gaps.missing_relation_types.map((g) => (
+                                            <Tooltip key={g.name} title={`${g.source_entity_type || '*'} → ${g.target_entity_type || '*'}；示例：${g.examples.join('、') || '—'}`}>
+                                                <Tag color="purple">{g.name} ×{g.count}</Tag>
+                                            </Tooltip>
+                                        ))}
+                                    </Space>
+                                </div>
+                            )}
+
+                            <Button type="primary" icon={<BulbOutlined />} loading={previewLoading} onClick={doPreviewEvolve} style={{ marginTop: 8 }}>
+                                诱导并预览新版 Schema
+                            </Button>
+                        </>
+                    )}
+                </Spin>
+
+                {evolvePreview && (
+                    <>
+                        <Divider titlePlacement="start" plain>演化预览（人工确认后写入新版本）</Divider>
+                        <Descriptions size="small" column={2} bordered style={{ marginBottom: 12 }}>
+                            <Descriptions.Item label="实体类型">{schema.entity_types.length} → <b>{evolvePreview.entity_types.length}</b></Descriptions.Item>
+                            <Descriptions.Item label="关系类型">{schema.relation_types.length} → <b>{evolvePreview.relation_types.length}</b></Descriptions.Item>
+                        </Descriptions>
+                        <Space wrap style={{ marginBottom: 8 }}>
+                            {evolvePreview.entity_types
+                                .filter((et) => !schema.entity_types.some((e) => e.name === et.name))
+                                .map((et) => <Tag key={et.name} color="green">+ {et.name}</Tag>)}
+                            {evolvePreview.relation_types
+                                .filter((rt) => !schema.relation_types.some((r) => r.name === rt.name))
+                                .map((rt) => <Tag key={rt.name} color="green">+ {rt.name}</Tag>)}
+                        </Space>
+                        <div>
+                            <Popconfirm title="应用为新版本 Schema？" description="当前 Schema 会存为历史版本，可随时对照。" onConfirm={doApplyEvolve}>
+                                <Button type="primary" loading={applying}>确认应用为新版本</Button>
+                            </Popconfirm>
+                            <Button style={{ marginLeft: 8 }} onClick={() => setEvolvePreview(null)}>放弃</Button>
+                        </div>
+                    </>
+                )}
+
+                <Divider titlePlacement="start" plain><HistoryOutlined /> 版本历史</Divider>
+                {versions.length === 0 ? (
+                    <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无历史版本" />
+                ) : (
+                    <Table
+                        size="small"
+                        pagination={false}
+                        rowKey="version"
+                        dataSource={versions.slice().reverse()}
+                        columns={[
+                            { title: '版本', dataIndex: 'version', key: 'v', width: 70, render: (v: number) => <Tag>v{v}</Tag> },
+                            { title: '实体/关系', key: 'counts', width: 100, render: (_: any, r: SchemaVersion) => `${r.entity_types} / ${r.relation_types}` },
+                            { title: '说明', dataIndex: 'note', key: 'note' },
+                            { title: '时间', dataIndex: 'created_at', key: 'ts', width: 150, render: (t: string) => t?.replace('T', ' ').slice(0, 19) },
+                        ]}
+                    />
+                )}
             </Drawer>
         </Card>
     );
