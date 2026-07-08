@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import List
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 from models.run import Run, RunCreate
 from config import get_project_dir
 
@@ -46,15 +47,59 @@ def _update_run(project_id: str, run_id: str, **updates):
 
 @router.get("/{project_id}/extraction-plan")
 async def get_extraction_plan(project_id: str):
-    """返回当前项目的默认抽取计划（Plan，v3）。
-
-    第①步：Plan 由 config + Schema 反编译而来，等价于当前固定流水线，
-    供前端展示「本次抽取打算怎么抽」。第③步将支持规划器生成与人工确认。
-    """
+    """返回当前项目的抽取计划（Plan，v3）——由当前 Schema（含抽象度）+ config 编译。"""
     from services.planning import compile_default_plan, validate_plan
     plan = compile_default_plan(project_id)
     ok, errors = validate_plan(plan)
     return {"plan": plan.model_dump(), "valid": ok, "errors": errors}
+
+
+class PlanSuggestRequest(BaseModel):
+    user_intent: str = ""
+
+
+@router.post("/{project_id}/extraction-plan/suggest")
+async def suggest_extraction_plan(project_id: str, req: PlanSuggestRequest = None):
+    """规划器（v3 第③步）：LLM 分析 Schema + 文档样本，建议每个类型的抽取语义，
+    并给出应用后的预览 Plan。不落库，供前端确认。"""
+    from services.planning import suggest_extraction_semantics, compile_preview_plan, validate_plan
+    req = req or PlanSuggestRequest()
+    try:
+        semantics = await suggest_extraction_semantics(project_id, user_intent=req.user_intent)
+        preview = compile_preview_plan(project_id, semantics)
+        ok, errors = validate_plan(preview)
+        return {"semantics": semantics, "preview_plan": preview.model_dump(), "valid": ok, "errors": errors}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+class PlanApplyRequest(BaseModel):
+    semantics: List[dict]
+
+
+@router.post("/{project_id}/extraction-plan/preview")
+async def preview_extraction_plan(project_id: str, req: PlanApplyRequest):
+    """用给定 semantics 编译预览 Plan（不落库）——供前端调整抽象度后实时预览。"""
+    from services.planning import compile_preview_plan, validate_plan
+    try:
+        plan = compile_preview_plan(project_id, req.semantics)
+        ok, errors = validate_plan(plan)
+        return {"plan": plan.model_dump(), "valid": ok, "errors": errors}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.post("/{project_id}/extraction-plan/apply")
+async def apply_extraction_plan(project_id: str, req: PlanApplyRequest):
+    """人工确认后：把抽取语义写回 Schema 并返回最终 Plan。"""
+    from services.planning import apply_extraction_semantics, compile_default_plan, validate_plan
+    try:
+        apply_extraction_semantics(project_id, req.semantics)
+        plan = compile_default_plan(project_id)
+        ok, errors = validate_plan(plan)
+        return {"message": "抽取计划已应用", "plan": plan.model_dump(), "valid": ok, "errors": errors}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.get("/{project_id}/runs/estimate")

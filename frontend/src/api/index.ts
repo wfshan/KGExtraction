@@ -328,6 +328,24 @@ export interface ExtractionPlan {
 }
 export const getExtractionPlan = (projectId: string) =>
   api.get<{ plan: ExtractionPlan; valid: boolean; errors: string[] }>(`/projects/${projectId}/extraction-plan`);
+
+// v3 第③步：规划器 —— LLM 建议每个类型的抽取语义 + 预览 Plan，人工确认后写回 Schema
+export interface TypeSemantics {
+  name: string;
+  abstractness: 'surface' | 'normalized' | 'inductive';
+  evidence_mode: string;
+  structure_template: { fields: { key: string; required: boolean; description: string }[] } | null;
+  reason: string;
+}
+export const suggestExtractionPlan = (projectId: string, userIntent = '') =>
+  api.post<{ semantics: TypeSemantics[]; preview_plan: ExtractionPlan; valid: boolean }>(
+    `/projects/${projectId}/extraction-plan/suggest`, { user_intent: userIntent }, { timeout: 300000 });
+export const previewExtractionPlan = (projectId: string, semantics: TypeSemantics[]) =>
+  api.post<{ plan: ExtractionPlan; valid: boolean }>(
+    `/projects/${projectId}/extraction-plan/preview`, { semantics });
+export const applyExtractionPlan = (projectId: string, semantics: TypeSemantics[]) =>
+  api.post<{ message: string; plan: ExtractionPlan }>(
+    `/projects/${projectId}/extraction-plan/apply`, { semantics });
 export const startRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs`, {});
 // 增量抽取：仅处理上次抽取后新增的文档，与既有草稿图谱合并
 export const startIncrementalRun = (projectId: string) => api.post<Run>(`/projects/${projectId}/runs/incremental`, {});

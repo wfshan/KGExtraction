@@ -7,16 +7,28 @@ import {
 } from 'antd';
 import {
     PlusOutlined, DeleteOutlined, BulbOutlined, TagOutlined, SwapOutlined, MessageOutlined, RobotOutlined, UserOutlined, SendOutlined,
-    DownOutlined, RightOutlined, NodeExpandOutlined, HistoryOutlined,
+    DownOutlined, RightOutlined, NodeExpandOutlined, HistoryOutlined, ThunderboltOutlined,
 } from '@ant-design/icons';
 import { Tag, Descriptions, Table, Tooltip, Alert, Divider } from 'antd';
 import {
     getSchema, updateSchema, suggestSchema, getSchemaSources, getProfileSummaryStream, chatWithSchemaStream, generateSchemaFromChat, getRunLogs,
     getSchemaGaps, previewSchemaEvolve, applySchemaEvolve, getSchemaVersions,
+    suggestExtractionPlan, previewExtractionPlan, applyExtractionPlan,
 } from '../api';
 import type {
     SchemaConfig, EntityType, RelationType, SchemaSource, SchemaGaps, SchemaVersion,
+    TypeSemantics, ExtractionPlan,
 } from '../api';
+
+// 步骤原语中文名（精简，与 ExtractionRunner 一致）
+const PLAN_PRIMITIVE_LABEL: Record<string, string> = {
+    segment: '文档分片', extract_surface: '表面抽取', normalize_value: '值标准化',
+    induce_from_cases: '案例归纳', extract_combined: '合并抽取', extract_relations_intra: '片段内关系',
+    infer_relations_cross: '跨片段关系', resolve_surface: '表面消歧', merge_semantic: '语义归并',
+    validate_type: '类型校验', validate_structure: '结构校验', verify_evidence_verbatim: '逐字证据校验',
+    verify_faithfulness: '归纳忠实度校验', self_correct: '自我修正', post_correct: '后验修正',
+    add_document_structure: '文档结构层',
+};
 
 const { Text } = Typography;
 
@@ -73,6 +85,61 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
     const [previewLoading, setPreviewLoading] = useState(false);
     const [applying, setApplying] = useState(false);
     const [versions, setVersions] = useState<SchemaVersion[]>([]);
+
+    // v3 第③步：智能规划（LLM 建议抽取语义 → 预览 Plan → 写回 Schema）
+    const [plannerOpen, setPlannerOpen] = useState(false);
+    const [plannerIntent, setPlannerIntent] = useState('');
+    const [plannerBusy, setPlannerBusy] = useState(false);
+    const [plannerApplying, setPlannerApplying] = useState(false);
+    const [semantics, setSemantics] = useState<TypeSemantics[] | null>(null);
+    const [planPreview, setPlanPreview] = useState<ExtractionPlan | null>(null);
+
+    const openPlanner = () => {
+        setPlannerOpen(true);
+        setSemantics(null);
+        setPlanPreview(null);
+    };
+
+    const runPlanner = async () => {
+        setPlannerBusy(true);
+        try {
+            const res = await suggestExtractionPlan(projectId, plannerIntent);
+            setSemantics(res.data.semantics);
+            setPlanPreview(res.data.preview_plan);
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '智能规划失败');
+        } finally {
+            setPlannerBusy(false);
+        }
+    };
+
+    const changeAbstractness = async (name: string, ab: 'surface' | 'normalized' | 'inductive') => {
+        if (!semantics) return;
+        const next = semantics.map((s) =>
+            s.name === name ? { ...s, abstractness: ab, evidence_mode: ab === 'inductive' ? 'span' : 'verbatim' } : s
+        );
+        setSemantics(next);
+        // 调整后实时重编译预览
+        try {
+            const res = await previewExtractionPlan(projectId, next);
+            setPlanPreview(res.data.plan);
+        } catch { /* 预览失败不阻塞编辑 */ }
+    };
+
+    const applyPlanner = async () => {
+        if (!semantics) return;
+        setPlannerApplying(true);
+        try {
+            await applyExtractionPlan(projectId, semantics);
+            message.success('抽取计划已应用，类型抽象度已写入 Schema');
+            await loadSchema();
+            setPlannerOpen(false);
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '应用失败');
+        } finally {
+            setPlannerApplying(false);
+        }
+    };
 
     useEffect(() => {
         loadSchema();
@@ -390,6 +457,11 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                     <Tooltip title="根据抽取结果检测 Schema 未覆盖的高频类型，诱导补全并版本化">
                         <Button onClick={openEvolve} icon={<NodeExpandOutlined />}>
                             缺口演化
+                        </Button>
+                    </Tooltip>
+                    <Tooltip title="让大模型分析类型与文档，自动判断每个类型该走表面抽取还是归纳抽取，规划专用抽取流程">
+                        <Button onClick={openPlanner} icon={<ThunderboltOutlined />}>
+                            智能规划
                         </Button>
                     </Tooltip>
                     <Button onClick={handleSave}>保存</Button>
@@ -824,6 +896,92 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                             { title: '时间', dataIndex: 'created_at', key: 'ts', width: 150, render: (t: string) => t?.replace('T', ' ').slice(0, 19) },
                         ]}
                     />
+                )}
+            </Drawer>
+
+            {/* 智能规划 Drawer（v3 第③步：本体编译抽取流程） */}
+            <Drawer
+                title={<span><ThunderboltOutlined /> 智能规划抽取流程</span>}
+                open={plannerOpen}
+                onClose={() => setPlannerOpen(false)}
+                width={680}
+            >
+                <Alert
+                    type="info"
+                    showIcon
+                    style={{ marginBottom: 16 }}
+                    message="让本体编译出专用抽取流程"
+                    description="大模型会分析每个类型的定义与文档样本，判断它该走「表面抽取」（人名/日期等可定位实体）还是「归纳抽取」（规则/概念等需从案例概括的知识），并规划出对应的抽取步骤。你只需确认，无需配置任何技术参数。"
+                />
+
+                <Space.Compact style={{ width: '100%', marginBottom: 16 }}>
+                    <Input
+                        placeholder="可选：一句话描述你想抽什么（如：从审计案例中抽出可复用的风控规则）"
+                        value={plannerIntent}
+                        onChange={(e) => setPlannerIntent(e.target.value)}
+                        onPressEnter={runPlanner}
+                    />
+                    <Button type="primary" icon={<ThunderboltOutlined />} loading={plannerBusy} onClick={runPlanner}>
+                        开始规划
+                    </Button>
+                </Space.Compact>
+
+                {plannerBusy && <div style={{ textAlign: 'center', padding: 24, color: 'var(--gray-400)' }}>大模型分析中...</div>}
+
+                {semantics && (
+                    <>
+                        <Divider titlePlacement="start" plain>类型抽取语义（可调整）</Divider>
+                        <Table
+                            size="small"
+                            pagination={false}
+                            rowKey="name"
+                            dataSource={semantics}
+                            columns={[
+                                { title: '类型', dataIndex: 'name', key: 'name', width: 130, render: (n: string) => <b>{n}</b> },
+                                {
+                                    title: '抽取方式', key: 'ab', width: 130,
+                                    render: (_: any, r: TypeSemantics) => (
+                                        <Select
+                                            size="small"
+                                            value={r.abstractness}
+                                            onChange={(v) => changeAbstractness(r.name, v)}
+                                            style={{ width: 110 }}
+                                            options={[
+                                                { label: '表面抽取', value: 'surface' },
+                                                { label: '标准化', value: 'normalized' },
+                                                { label: '归纳抽取', value: 'inductive' },
+                                            ]}
+                                        />
+                                    ),
+                                },
+                                { title: '判断依据', dataIndex: 'reason', key: 'reason', render: (t: string) => <span style={{ fontSize: 12, color: 'var(--gray-500)' }}>{t}</span> },
+                            ]}
+                        />
+
+                        {planPreview && (
+                            <>
+                                <Divider titlePlacement="start" plain>规划出的抽取步骤（{planPreview.steps.length}）</Divider>
+                                <Space wrap>
+                                    {planPreview.steps.map((s, i) => (
+                                        <Tag key={s.step_id} color={['induce_from_cases', 'verify_faithfulness'].includes(s.primitive) ? 'purple' : 'blue'}>
+                                            {i + 1}. {PLAN_PRIMITIVE_LABEL[s.primitive] || s.primitive}
+                                        </Tag>
+                                    ))}
+                                </Space>
+                            </>
+                        )}
+
+                        <div style={{ marginTop: 20 }}>
+                            <Popconfirm
+                                title="应用该抽取计划？"
+                                description="各类型的抽取语义（表面/归纳等）将写入 Schema，随后抽取即按此计划执行。"
+                                onConfirm={applyPlanner}
+                            >
+                                <Button type="primary" loading={plannerApplying}>确认并应用</Button>
+                            </Popconfirm>
+                            <Button style={{ marginLeft: 8 }} onClick={() => setPlannerOpen(false)}>取消</Button>
+                        </div>
+                    </>
                 )}
             </Drawer>
         </Card>

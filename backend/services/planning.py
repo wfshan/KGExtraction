@@ -45,7 +45,11 @@ def compile_default_plan(project_id: str, config=None) -> Plan:
         config = load_config()
 
     schema, version = _load_schema_and_version(project_id)
+    return _compile_plan(schema, version, config)
 
+
+def _compile_plan(schema: Dict, version: int, config) -> Plan:
+    """基于给定 schema dict 编译一份 Plan（供 compile_default_plan 与规划预览复用）。"""
     # 契约 A：读取每个类型声明的抽象度（旧数据缺省 surface + verbatim）
     def _enum(cls, val, default):
         try:
@@ -221,3 +225,171 @@ def validate_plan(plan: Plan) -> Tuple[bool, List[str]]:
         errors.append("Plan 的 DAG 中存在环")
 
     return (len(errors) == 0, errors)
+
+
+# ==========================================================================
+# 规划器（Planner，v3 第③步）
+#
+# 设计：LLM 只做「语义标注」（判断每个类型是表面还是归纳、需要什么结构字段），
+# DAG 编排交给确定性的 _compile_plan。这既发挥 LLM 长处，又守住契约 D 的三条
+# 不变量（封闭性/可校验/可解释）——LLM 不发明步骤，只决定类型的抽取语义。
+# ==========================================================================
+
+SUGGEST_SEMANTICS_PROMPT = """你是知识抽取流程规划专家。给定本体的实体类型定义与文档样本，
+为每个类型判断其「抽取语义」，以决定它该走表面抽取还是归纳抽取。
+
+## 判断维度 abstractness
+- surface：实例在文本中表面存在、可直接定位（人名、机构名、文件名、账号、术语）
+- normalized：表面存在但需标准化（日期→ISO、金额→数值、比例）
+- inductive：实例不在原文中、需从案例/描述**归纳概括**（规则、模式、概念、结论、要点）
+
+## 若判为 inductive，请给出 structure_template
+即该类抽象知识应包含哪些结构字段（如「触发条件」「风险类别」「适用场景」），
+其中「可判别条件」类字段应标 required=true。
+
+## 实体类型（含定义）
+{types}
+
+## 文档样本
+{samples}
+
+## 用户意图（可空）
+{user_intent}
+
+## 输出（严格 JSON）
+{{
+  "semantics": [
+    {{
+      "name": "类型名（须来自上方列表）",
+      "abstractness": "surface | normalized | inductive",
+      "structure_template": {{"fields": [{{"key": "字段名", "required": true, "description": "说明"}}]}},
+      "reason": "判断依据（一句话）"
+    }}
+  ]
+}}
+"""
+
+
+def _evidence_mode_for(abstractness: str) -> str:
+    """证据模式由抽象度确定性推导：归纳走 span，其余走 verbatim。"""
+    return "span" if abstractness == "inductive" else "verbatim"
+
+
+def _sample_chunks(project_id: str, n: int = 8) -> List[str]:
+    try:
+        from services.chunk_store import list_all_chunks
+        chunks = list_all_chunks(project_id)
+    except Exception:
+        return []
+    if not chunks:
+        return []
+    if len(chunks) <= n:
+        return [c.get("content", "") for c in chunks]
+    step = len(chunks) / n
+    return [chunks[int(i * step)].get("content", "") for i in range(n)]
+
+
+async def suggest_extraction_semantics(project_id: str, user_intent: str = "") -> List[Dict]:
+    """LLM 为每个实体类型建议抽取语义（abstractness / structure_template / 理由）。
+
+    未被 LLM 覆盖的类型沿用其现有设置。返回列表供前端确认与编辑。
+    """
+    import json
+
+    schema, _ = _load_schema_and_version(project_id)
+    ets = schema.get("entity_types", [])
+    if not ets:
+        return []
+
+    samples = _sample_chunks(project_id)
+    types_desc = json.dumps(
+        [{"name": e.get("name"), "definition": e.get("definition", "")} for e in ets],
+        ensure_ascii=False, indent=2,
+    )
+    samples_text = "\n---\n".join(s[:600] for s in samples if s) or "（无文档样本，请仅依据类型定义判断）"
+
+    valid_names = {e.get("name") for e in ets}
+    suggestions: Dict[str, Dict] = {}
+    try:
+        from services.llm_gateway import llm_gateway, COMPLEXITY_COMPLEX
+        result = await llm_gateway.chat_json(
+            messages=[
+                {"role": "system", "content": "你是知识抽取流程规划专家，只返回 JSON。"},
+                {"role": "user", "content": SUGGEST_SEMANTICS_PROMPT.format(
+                    types=types_desc, samples=samples_text, user_intent=user_intent or "（未提供）",
+                )},
+            ],
+            complexity=COMPLEXITY_COMPLEX,
+        )
+        for s in result.get("semantics", []):
+            name = s.get("name")
+            if name not in valid_names:
+                continue
+            ab = s.get("abstractness", "surface")
+            if ab not in ("surface", "normalized", "inductive"):
+                ab = "surface"
+            suggestions[name] = {
+                "name": name,
+                "abstractness": ab,
+                "evidence_mode": _evidence_mode_for(ab),
+                "structure_template": s.get("structure_template") if ab == "inductive" else None,
+                "reason": s.get("reason", ""),
+            }
+    except Exception as e:
+        logger.warning(f"[规划器] LLM 语义建议失败，回退现有设置: {e}")
+
+    # 补齐未覆盖的类型（沿用现有 schema 设置）
+    out: List[Dict] = []
+    for e in ets:
+        name = e.get("name")
+        if name in suggestions:
+            out.append(suggestions[name])
+        else:
+            ab = e.get("abstractness", "surface")
+            out.append({
+                "name": name,
+                "abstractness": ab,
+                "evidence_mode": _evidence_mode_for(ab),
+                "structure_template": e.get("structure_template"),
+                "reason": "（沿用现有设置）",
+            })
+    return out
+
+
+def _apply_semantics_to_schema(schema: Dict, semantics: List[Dict]) -> Dict:
+    """把 semantics 写入 schema dict 的实体类型（就地修改并返回）。"""
+    sem_by_name = {s.get("name"): s for s in semantics}
+    for et in schema.get("entity_types", []):
+        s = sem_by_name.get(et.get("name"))
+        if not s:
+            continue
+        ab = s.get("abstractness", "surface")
+        et["abstractness"] = ab
+        et["evidence_mode"] = s.get("evidence_mode") or _evidence_mode_for(ab)
+        if s.get("structure_template") is not None:
+            et["structure_template"] = s.get("structure_template")
+    return schema
+
+
+def compile_preview_plan(project_id: str, semantics: List[Dict], config=None) -> Plan:
+    """用建议的 semantics 覆盖 schema 后编译预览 Plan（不落库）。"""
+    if config is None:
+        from config import load_config
+        config = load_config()
+    schema, version = _load_schema_and_version(project_id)
+    schema = _apply_semantics_to_schema(schema, semantics)
+    return _compile_plan(schema, version, config)
+
+
+def apply_extraction_semantics(project_id: str, semantics: List[Dict]) -> Dict:
+    """把 semantics 写回 schema.json（持久化抽取语义），返回更新后的 schema。"""
+    import json
+    from config import get_project_dir
+    from services.graph_store import _load_schema_dict
+
+    schema = _load_schema_dict(project_id) or {"entity_types": [], "relation_types": []}
+    schema = _apply_semantics_to_schema(schema, semantics)
+    path = get_project_dir(project_id) / "schema.json"
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(schema, f, ensure_ascii=False, indent=2)
+    return schema
