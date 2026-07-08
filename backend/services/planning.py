@@ -46,17 +46,26 @@ def compile_default_plan(project_id: str, config=None) -> Plan:
 
     schema, version = _load_schema_and_version(project_id)
 
-    # 契约 A：现状不区分抽象度，所有实体类型默认 surface + verbatim 证据
+    # 契约 A：读取每个类型声明的抽象度（旧数据缺省 surface + verbatim）
+    def _enum(cls, val, default):
+        try:
+            return cls(val)
+        except Exception:
+            return default
+
     knowledge_types: Dict[str, KnowledgeTypeMeta] = {}
     for et in schema.get("entity_types", []):
         name = et.get("name")
         if name:
             knowledge_types[name] = KnowledgeTypeMeta(
                 name=name,
-                abstractness=Abstractness.surface,
-                evidence_mode=EvidenceMode.verbatim,
-                identity_by="name",
+                abstractness=_enum(Abstractness, et.get("abstractness", "surface"), Abstractness.surface),
+                evidence_mode=_enum(EvidenceMode, et.get("evidence_mode", "verbatim"), EvidenceMode.verbatim),
+                identity_by=et.get("identity_by", "name") or "name",
+                structure_template=et.get("structure_template"),
             )
+
+    inductive_types = [n for n, kt in knowledge_types.items() if kt.abstractness == Abstractness.inductive]
 
     steps: List[Step] = []
 
@@ -87,6 +96,15 @@ def compile_default_plan(project_id: str, config=None) -> Plan:
         add("s_extract_r", Primitive.extract_relations_intra,
             "multi-pass：再抽片段内关系", depends_on=["s_extract_e"])
         extract_dep = "s_extract_r"
+
+    # inductive 分道：从案例归纳抽象知识 + 忠实度校验（v3 第②步）
+    if inductive_types:
+        add("s_induce", Primitive.induce_from_cases,
+            f"从案例归纳抽象知识（类型: {', '.join(inductive_types)}）",
+            depends_on=["s_segment"], targets=inductive_types)
+        add("s_faithful", Primitive.verify_faithfulness,
+            "归纳忠实度校验：剔除不被源案例支撑的归纳（挡幻觉归纳）",
+            depends_on=["s_induce"], targets=inductive_types)
 
     # 证据锚定（现状为抽取内联的逐字校验）
     if getattr(config, "enable_evidence_anchor", True):

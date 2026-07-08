@@ -281,13 +281,22 @@ async def run_extraction_pipeline_sync(
             "payload": payload,
         })
 
+    # inductive 类型集合（供证据分道：命中已有 inductive 实体时用 span 模式）
+    inductive_type_names = set()
+    if plan is not None:
+        inductive_type_names = {
+            n for n, kt in plan.knowledge_types.items()
+            if str(getattr(kt.abstractness, "value", kt.abstractness)) == "inductive"
+        }
+
     def _link_existing_node(node: Node, chunk_id: str, raw_evidence=None):
         """已有实体在当前片段出现：更新内存并缓冲数据库回写（修复溯源丢失）。"""
         if chunk_id not in node.source_chunk_ids:
             node.source_chunk_ids.append(chunk_id)
         ev = []
         if raw_evidence:
-            ev = build_evidence(chunk_id, raw_evidence, _chunk_text_by_id.get(chunk_id, ""), config.enable_evidence_anchor)
+            ev_mode = "span" if node.entity_type in inductive_type_names else "verbatim"
+            ev = build_evidence(chunk_id, raw_evidence, _chunk_text_by_id.get(chunk_id, ""), config.enable_evidence_anchor, ev_mode)
         chunk_link_buffer.append({
             "node_id": node.id,
             "chunk_ids": [chunk_id],
@@ -329,25 +338,23 @@ async def run_extraction_pipeline_sync(
             has_target_filter = bool(doc_config.get("target_entities")) or bool(doc_config.get("target_relations"))
 
             t_extract_begin = perf_counter()
-            if config.extraction_mode == "one-pass":
-                log_extraction(f"[片段 {chunk_id}] 合并抽取实体与关系...")
-                combined_result = await extract_entities_and_relations(
-                    chunk_text,
-                    chunk_schema,
-                    stream_log=llm_stream_log,
-                    extra_guidance=reflection_hint,
-                )
-                raw_entities = combined_result.get("entities", [])
-                raw_relations = combined_result.get("relations", [])
-            else:
-                log_extraction(f"[片段 {chunk_id}] 实体抽取中...")
-                raw_entities = await extract_entities(
-                    chunk_text,
-                    chunk_schema,
-                    stream_log=llm_stream_log,
-                    extra_guidance=reflection_hint,
-                )
-                raw_relations = [] # 随后提取
+            # v3：候选生成按知识类型抽象度分派（surface→现有抽取，inductive→归纳）。
+            # 无 inductive 类型时等价于现状 one-pass/multi-pass 抽取（零回归）。
+            log_extraction(f"[片段 {chunk_id}] 候选生成（按 Plan 抽象度分派）...")
+            from services.extraction.dispatch import generate_candidates
+            cand = await generate_candidates(
+                chunk_text, chunk_schema, plan, config,
+                reflection_hint=reflection_hint, stream_log=llm_stream_log,
+            )
+            raw_entities = cand["entities"]
+            raw_relations = cand["relations"]
+            # 归纳忠实度未通过的候选落被拒项（挡幻觉归纳）
+            if cand.get("rejected_inductive"):
+                async with mem_lock:
+                    all_stats["entities_rejected"] += len(cand["rejected_inductive"])
+                    for rej in cand["rejected_inductive"]:
+                        _buffer_rejected(chunk_id, "entity", rej["name"], rej["entity_type"],
+                                         rej["reason"], rej.get("payload", {}))
             t_extract_ms = (perf_counter() - t_extract_begin) * 1000
             async with mem_lock:
                 all_stats["timing_extract_ms"] += t_extract_ms
@@ -544,12 +551,14 @@ async def run_extraction_pipeline_sync(
                         all_stats["entities_deduplicated"] += 1
                         continue
 
+                    # 证据分道：inductive 知识用 span 模式（不逐字校验，已过忠实度）
+                    ev_mode = "span" if entity_data.get("_abstractness") == "inductive" else "verbatim"
                     node = Node(
                         name=entity_name,
                         entity_type=entity_type,
                         properties=entity_data.get("properties", {}),
                         source_chunk_ids=[chunk_id],
-                        evidence_quotes=build_evidence(chunk_id, entity_data.get("evidence"), chunk_text, config.enable_evidence_anchor),
+                        evidence_quotes=build_evidence(chunk_id, entity_data.get("evidence"), chunk_text, config.enable_evidence_anchor, ev_mode),
                         confidence=entity_data.get("confidence", 1.0),
                         run_id=run_id,
                     )

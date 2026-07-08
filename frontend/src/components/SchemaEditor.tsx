@@ -495,6 +495,19 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                             onBlur={autoSave}
                                             style={{ width: 200 }}
                                         />
+                                        <Tooltip title="表面=文本中存在可定位（人名/日期/文件名）；标准化=表面存在但需归一（日期/金额）；归纳=原文不存在、需从案例概括（概念/规则/模式）。归纳类型将走专门的归纳抽取与忠实度校验。">
+                                            <Select
+                                                size="small"
+                                                value={et.abstractness || 'surface'}
+                                                onChange={(v) => { updateEntityType(i, 'abstractness', v); autoSave(); }}
+                                                style={{ width: 108 }}
+                                                options={[
+                                                    { label: '表面实体', value: 'surface' },
+                                                    { label: '标准化值', value: 'normalized' },
+                                                    { label: '归纳知识', value: 'inductive' },
+                                                ]}
+                                            />
+                                        </Tooltip>
                                         <Popconfirm title="确定删除？" onConfirm={() => removeEntityType(i)}>
                                             <Button danger size="small" icon={<DeleteOutlined />} />
                                         </Popconfirm>
@@ -505,6 +518,14 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                         onChange={(e) => updateEntityType(i, 'definition', e.target.value)}
                                         onBlur={autoSave}
                                     />
+                                    {(et.abstractness === 'inductive') && (
+                                        <Alert
+                                            type="warning"
+                                            showIcon
+                                            style={{ fontSize: 12 }}
+                                            message="归纳类型：将从案例概括抽象知识，证据为源案例摘录（不逐字校验，靠归纳忠实度把关）。建议在定义中写清期望的粒度与可判别条件。"
+                                        />
+                                    )}
                                     <Input
                                         placeholder="示例实例（逗号分隔，如：张三, 李四）"
                                         value={et.examples.join(', ')}

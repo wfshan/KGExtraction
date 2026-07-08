@@ -165,6 +165,11 @@ export interface EntityType {
   definition: string;
   examples: string[];
   color: string;
+  // v3 抽取语义（缺省 surface/verbatim/name，兼容旧数据）
+  abstractness?: 'surface' | 'normalized' | 'inductive';
+  evidence_mode?: 'verbatim' | 'span' | 'none';
+  structure_template?: { fields: { key: string; required: boolean; description: string }[] } | null;
+  identity_by?: 'name' | 'semantic';
 }
 
 export interface RelationType {

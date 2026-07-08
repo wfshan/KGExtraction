@@ -31,9 +31,16 @@ def build_evidence(
     raw_evidence,
     chunk_text: str,
     enabled: bool,
+    evidence_mode: str = "verbatim",
     max_quote_chars: int = 300,
 ) -> List[Dict]:
-    """将 LLM 返回的 evidence 规整为带 verified 标记的 evidence_quotes 列表。"""
+    """将 LLM 返回的 evidence 规整为带 verified 标记的 evidence_quotes 列表。
+
+    evidence_mode（证据分道，v3）：
+    - verbatim：表面知识 —— 逐字命中原文才 verified=True（挡幻觉证据）。
+    - span / none：归纳知识 —— 证据是源案例摘录、不会逐字命中，故不做逐字校验，
+      verified=None（视同通过；其可信由归纳忠实度校验 verify_faithfulness 保证）。
+    """
     if not enabled or not raw_evidence:
         return []
     quotes: List[str] = []
@@ -47,10 +54,12 @@ def build_evidence(
         q = q.strip()
         if not q:
             continue
+        quote = q[:max_quote_chars]
+        verified = verify_quote(quote, chunk_text) if evidence_mode == "verbatim" else None
         result.append({
             "chunk_id": chunk_id,
-            "quote": q[:max_quote_chars],
-            "verified": verify_quote(q[:max_quote_chars], chunk_text),
+            "quote": quote,
+            "verified": verified,
         })
     return result
 
