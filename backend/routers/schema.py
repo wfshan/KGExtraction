@@ -18,33 +18,6 @@ def _get_schema_file(project_id: str) -> Path:
     return get_project_dir(project_id) / "schema.json"
 
 
-def _get_evenly_sampled_texts(project_id: str, sample_size: int = 15):
-    """从项目的所有分片中均匀抽取指定数量的文本特征样本"""
-    project_dir = get_project_dir(project_id)
-    chunks_dir = project_dir / "chunks"
-    all_chunks = []
-    if chunks_dir.exists():
-        for chunk_file in chunks_dir.glob("*_chunks.json"):
-            with open(chunk_file, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-                all_chunks.extend(chunks)
-    
-    total = len(all_chunks)
-    if total == 0:
-        return [], 0
-        
-    if total <= sample_size:
-        sample = all_chunks
-    else:
-        # 均匀跨度采样
-        step = total / sample_size
-        indices = sorted(list(set(int(i * step) for i in range(sample_size))))
-        sample = [all_chunks[i] for i in indices if i < total]
-        
-    sample_texts = [c["text"] for c in sample]
-    return sample_texts, total
-
-
 def _has_documents(project_id: str) -> bool:
     """检查项目是否有已解析的文档（chunks 数据）"""
     project_dir = get_project_dir(project_id)
@@ -149,11 +122,9 @@ async def suggest_schema(project_id: str, req: SchemaSuggestionRequest = None):
         log_extraction("=== Schema 智能建议完成 ===")
         return schema
 
-    # documents 流程
-    log_extraction("[Step 1] 进入文档采样流程")
-    sample_texts, total_chunks = _get_evenly_sampled_texts(project_id, req.sample_size)
-    log_extraction(f"[Step 2] 采样完成: sample_size={len(sample_texts)}, total_chunks={total_chunks}")
-    schema = await generate_schema_suggestion(project_id, sample_texts, total_chunks)
+    # documents 流程（分层抽样 + Map-Reduce 领域概括在 generate_schema_suggestion 内部完成）
+    log_extraction("[Step 1] 进入文档分层抽样与领域概括流程")
+    schema = await generate_schema_suggestion(project_id, req.sample_size)
     log_extraction("[Step 3] 文档建议完成，写入 schema.json")
     _save_schema(project_id, schema)
     log_extraction("=== Schema 智能建议完成 ===")
@@ -177,10 +148,9 @@ async def chat_with_schema(project_id: str, req: SchemaChatRequest):
     from services.schema_suggestion import chat_schema_stream
     
     resolved = _resolve_source(project_id, req.source)
-    sample_texts, total_chunks = _get_evenly_sampled_texts(project_id, 15)
-    
+
     return StreamingResponse(
-        chat_schema_stream(project_id, req.messages, sample_texts, total_chunks, source=resolved),
+        chat_schema_stream(project_id, req.messages, source=resolved),
         media_type="text/event-stream"
     )
 

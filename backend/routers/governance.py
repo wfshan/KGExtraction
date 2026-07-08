@@ -56,6 +56,16 @@ async def cluster_entities_api(project_id: str, req: ClusterRequest = None):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@router.post("/{project_id}/graph/merge-inductive")
+async def merge_inductive_api(project_id: str):
+    """归纳知识语义归并（v3）：合并同义的抽象规则/概念，置信度按支撑案例数客观化。"""
+    from services.fusion import merge_inductive_knowledge
+    try:
+        return await merge_inductive_knowledge(project_id)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
 class FuseRequest(BaseModel):
     do_entity_clustering: bool = True
     do_relation_canonicalize: bool = True

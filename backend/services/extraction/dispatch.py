@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from services.extraction.combined import extract_entities_and_relations
 from services.extraction.entity import extract_entities
-from services.extraction.induction import induce_from_cases, verify_faithfulness
+from services.extraction.induction import induce_from_cases, verify_faithfulness, validate_structure
 
 logger = logging.getLogger(__name__)
 
@@ -89,17 +89,28 @@ async def generate_candidates(
             chunk_text, inductive_ets, stream_log=stream_log, extra_guidance=reflection_hint,
         )
         if induced:
-            verdict = await verify_faithfulness(chunk_text, induced, stream_log=stream_log)
-            for it in induced:
-                if verdict.get(it.get("name", ""), True):
-                    entities.append(it)
-                else:
-                    rejected_inductive.append({
-                        "name": it.get("name", ""),
-                        "entity_type": it.get("entity_type", ""),
-                        "reason": "unfaithful_induction",
-                        "payload": {k: v for k, v in it.items() if not k.startswith("_")},
-                    })
-            logger.info(f"归纳分道：保留 {len(induced) - len(rejected_inductive)} 条 / 拒绝 {len(rejected_inductive)} 条")
+            # 关1：结构校验（确定性）——挡残缺/空泛规则
+            induced, struct_rejected = validate_structure(induced, inductive_ets)
+            for it in struct_rejected:
+                rejected_inductive.append({
+                    "name": it.get("name", ""),
+                    "entity_type": it.get("entity_type", ""),
+                    "reason": it.get("_reject_reason", "invalid_structure"),
+                    "payload": {k: v for k, v in it.items() if not k.startswith("_")},
+                })
+            # 关2：忠实度校验（LLM）——挡幻觉归纳
+            if induced:
+                verdict = await verify_faithfulness(chunk_text, induced, stream_log=stream_log)
+                for it in induced:
+                    if verdict.get(it.get("name", ""), True):
+                        entities.append(it)
+                    else:
+                        rejected_inductive.append({
+                            "name": it.get("name", ""),
+                            "entity_type": it.get("entity_type", ""),
+                            "reason": "unfaithful_induction",
+                            "payload": {k: v for k, v in it.items() if not k.startswith("_")},
+                        })
+            logger.info(f"归纳分道：拒绝 {len(rejected_inductive)} 条（结构+忠实度双关）")
 
     return {"entities": entities, "relations": relations, "rejected_inductive": rejected_inductive}

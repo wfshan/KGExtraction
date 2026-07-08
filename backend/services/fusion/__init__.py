@@ -7,10 +7,12 @@
 """
 from services.fusion.relation_canonicalize import canonicalize_relations
 from services.fusion.entity_clustering import cluster_entities
+from services.fusion.semantic_merge import merge_inductive_knowledge
 from services.fusion.pipeline import run_fusion_pipeline
 
 __all__ = [
     "canonicalize_relations",
     "cluster_entities",
+    "merge_inductive_knowledge",
     "run_fusion_pipeline",
 ]

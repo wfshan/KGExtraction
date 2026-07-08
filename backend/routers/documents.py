@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-ALLOWED_EXTENSIONS = {"pdf", "txt", "md", "docx", "csv"}
+ALLOWED_EXTENSIONS = {"pdf", "txt", "md", "docx", "csv", "xlsx"}
 
 
 def _get_docs_file(project_id: str) -> Path:

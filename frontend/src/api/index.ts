@@ -514,6 +514,8 @@ export const getChunksByIds = (projectId: string, chunkIds: string[]) =>
 // --- 融合与精炼（作用于草稿图） ---
 export const clusterEntities = (projectId: string, useLlm = true) =>
   api.post(`/projects/${projectId}/graph/cluster-entities`, { use_llm: useLlm }, { timeout: 300000 });
+export const mergeInductiveKnowledge = (projectId: string) =>
+  api.post(`/projects/${projectId}/graph/merge-inductive`, {}, { timeout: 300000 });
 export const canonicalizeRelations = (projectId: string) =>
   api.post(`/projects/${projectId}/graph/canonicalize-relations`, {}, { timeout: 300000 });
 export const postCorrectGraph = (projectId: string) =>

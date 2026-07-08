@@ -101,14 +101,17 @@ def _compile_plan(schema: Dict, version: int, config) -> Plan:
             "multi-pass：再抽片段内关系", depends_on=["s_extract_e"])
         extract_dep = "s_extract_r"
 
-    # inductive 分道：从案例归纳抽象知识 + 忠实度校验（v3 第②步）
+    # inductive 分道：从案例归纳抽象知识 + 结构校验 + 忠实度校验（v3 第②步+深化）
     if inductive_types:
         add("s_induce", Primitive.induce_from_cases,
             f"从案例归纳抽象知识（类型: {', '.join(inductive_types)}）",
             depends_on=["s_segment"], targets=inductive_types)
+        add("s_struct", Primitive.validate_structure,
+            "结构校验：剔除缺必填结构字段的残缺/空泛归纳（确定性）",
+            depends_on=["s_induce"], targets=inductive_types)
         add("s_faithful", Primitive.verify_faithfulness,
             "归纳忠实度校验：剔除不被源案例支撑的归纳（挡幻觉归纳）",
-            depends_on=["s_induce"], targets=inductive_types)
+            depends_on=["s_struct"], targets=inductive_types)
 
     # 证据锚定（现状为抽取内联的逐字校验）
     if getattr(config, "enable_evidence_anchor", True):

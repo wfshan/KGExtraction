@@ -129,3 +129,36 @@ async def verify_faithfulness(
     except Exception as e:
         logger.warning(f"[归纳忠实度] 校验失败，保守放行: {e}")
         return {it.get("name", ""): True for it in induced_items}
+
+
+def validate_structure(
+    items: List[Dict],
+    inductive_entity_types: List[Dict],
+) -> tuple[List[Dict], List[Dict]]:
+    """结构校验（确定性）：inductive 知识须齐备其类型的 required 结构字段。
+
+    挡两类低质量归纳：
+    - 残缺：缺少必填结构字段（如规则没有「触发条件」）；
+    - 空泛：必填字段值为空或过短（无实质可判别内容）。
+
+    返回 (valid, rejected)；rejected 项带 _reject_reason。
+    """
+    required_by_type: Dict[str, List[str]] = {}
+    for et in inductive_entity_types:
+        tmpl = et.get("structure_template") or {}
+        required_by_type[et.get("name", "")] = [
+            f.get("key") for f in tmpl.get("fields", []) if f.get("required") and f.get("key")
+        ]
+
+    valid, rejected = [], []
+    for it in items:
+        required = required_by_type.get(it.get("entity_type", ""), [])
+        props = it.get("properties") or {}
+        missing = [k for k in required if len(str(props.get(k, "")).strip()) < 2]
+        if missing:
+            r = dict(it)
+            r["_reject_reason"] = f"missing_required_field:{','.join(missing)}"
+            rejected.append(r)
+        else:
+            valid.append(it)
+    return valid, rejected

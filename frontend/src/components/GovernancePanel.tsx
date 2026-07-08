@@ -13,7 +13,7 @@ import {
 } from '@ant-design/icons';
 import {
     clusterEntities, canonicalizeRelations, postCorrectGraph, fuseGraph,
-    runMine1, getReflectionCases,
+    runMine1, getReflectionCases, mergeInductiveKnowledge,
 } from '../api';
 import type { Mine1Result, ReflectionCase } from '../api';
 
@@ -35,6 +35,8 @@ function StatsView({ stats }: { stats: Record<string, any> }) {
         entity_violations: '实体违规', relation_violations: '关系违规', entities_remapped: '实体重映射',
         entities_removed: '删除实体', relations_remapped: '关系重映射', relations_removed: '删除关系',
         edges_removed_constraint: '约束删边', note: '说明',
+        inductive_types: '归纳类型数', candidate_nodes: '候选节点', groups_merged: '合并组',
+        confidence_recalced: '置信度重算', final_inductive_nodes: '归纳知识数',
     };
     return (
         <Descriptions size="small" column={2} bordered style={{ marginTop: 8 }}>
@@ -50,6 +52,7 @@ export default function GovernancePanel({ projectId, onChanged }: Props) {
     const [clusterStats, setClusterStats] = useState<Record<string, any> | null>(null);
     const [canonStats, setCanonStats] = useState<Record<string, any> | null>(null);
     const [correctStats, setCorrectStats] = useState<Record<string, any> | null>(null);
+    const [mergeStats, setMergeStats] = useState<Record<string, any> | null>(null);
     const [mine1, setMine1] = useState<Mine1Result | null>(null);
     const [cases, setCases] = useState<ReflectionCase[]>([]);
 
@@ -146,10 +149,20 @@ export default function GovernancePanel({ projectId, onChanged }: Props) {
                     >
                         后验本体修正
                     </Button>
+                    <Tooltip title="合并措辞不同但语义相同的归纳知识（规则/概念），置信度按支撑案例数客观化">
+                        <Button
+                            icon={<MergeCellsOutlined />}
+                            loading={busy === 'merge'}
+                            onClick={() => run('merge', () => mergeInductiveKnowledge(projectId), setMergeStats)}
+                        >
+                            归纳知识语义归并
+                        </Button>
+                    </Tooltip>
                 </Space>
                 {clusterStats && <><Divider style={{ margin: '12px 0 4px' }} titlePlacement="start" plain>实体聚类</Divider><StatsView stats={clusterStats} /></>}
                 {canonStats && <><Divider style={{ margin: '12px 0 4px' }} titlePlacement="start" plain>关系规范化</Divider><StatsView stats={canonStats} /></>}
                 {correctStats && <><Divider style={{ margin: '12px 0 4px' }} titlePlacement="start" plain>后验修正</Divider><StatsView stats={correctStats} /></>}
+                {mergeStats && <><Divider style={{ margin: '12px 0 4px' }} titlePlacement="start" plain>归纳知识语义归并</Divider><StatsView stats={mergeStats} /></>}
             </Card>
 
             <Card size="small" title={<span><ExperimentOutlined /> 质量评测（MINE-1 信息保留率）</span>} style={{ marginBottom: 16 }}

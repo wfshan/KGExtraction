@@ -327,7 +327,7 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
             >
                 <Upload
                     customRequest={handleUpload}
-                    accept=".pdf,.txt,.md,.docx,.csv"
+                    accept=".pdf,.txt,.md,.docx,.csv,.xlsx"
                     showUploadList={false}
                     multiple
                 >

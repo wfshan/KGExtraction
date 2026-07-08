@@ -28,24 +28,29 @@ DOC_PROFILING_PROMPT = """你是一位从本体论（Ontology）与知识结构�
 请用 Markdown 直接输出报告，不要客套话。
 """
 
-SUGGEST_PROMPT = """你是一个知识图谱专家。请基于前期推断的【文档宏观图谱特征分析报告】，以及【原始文档片段】，生成一套能全面覆盖这些维度的 Schema 建议。
+SUGGEST_PROMPT = """你是一个知识图谱专家。请基于【全局领域概括】、【原始文档片段】以及【结构化文件表头】，生成一套能全面覆盖这些维度的 Schema 建议。
 
-## 第一部分：文档宏观图谱特征分析报告 (Document Profile)
+## 第一部分：全局领域概括 (Document Profile)
 {document_profile}
 
 ## 第二部分：原始文档片段样本
 {text_samples}
 
-## Schema 设计要求（遵循 GraphRAG 思想的高质量领域 Ontology 设计）：
+## 第三部分：结构化文件表头（若有；列名是天然的候选实体/属性信号）
+{structured_headers}
+
+## Schema 设计要求：
 1. **实体类型 (Entity Types)**：
-   - 包含常见的具体实体。
-   - **重点包含能反映深层业务逻辑的抽象实体（参考分析报告中的“抽象业务概念”）。**
-   - **数量不设严苛上限，尽可能全面、详尽地覆盖核心实体。**
-2. **关系类型 (Relation Types)**：
-   - 提取实体间最核心动作。重点关注具体实体与抽象实体之间的映射。
-   - **数量不设严苛上限，尽可能全面呈现拓扑关联。**
-3. 为每个类型提供简明的定义和 1-2 个真实示例。
-4. 标明关系类型的 source 和 target，确保它们存在于实体类型中。
+   - 涵盖具体实体，也要包含能反映深层业务逻辑的抽象概念（规则、模式、结论等）。
+   - 结构化文件的表头列，优先映射为实体或其属性。
+   - 数量不设严苛上限，尽可能全面覆盖核心实体。
+2. **为每个实体类型标注抽取抽象度 `abstractness`**（决定它走哪条抽取子流程）：
+   - `surface`：文本中可直接定位的实体（人名、机构、账号、文件名）。
+   - `normalized`：表面存在但需标准化的值（日期→ISO、金额→数值、比例）。
+   - `inductive`：原文不存在、需从案例/描述归纳的抽象知识（规则、模式、概念、结论）。
+   - 仅当 `abstractness=inductive` 时，给出 `structure_template`（该类归纳知识应含哪些结构字段，可判别条件类字段标 required=true）。
+3. **关系类型 (Relation Types)**：提取实体间核心关联；标明 source/target，确保它们存在于实体类型中。
+4. 为每个类型提供简明定义和 1-2 个真实示例。
 
 ## 请严格以以下 JSON 格式输出：
 {{
@@ -54,6 +59,8 @@ SUGGEST_PROMPT = """你是一个知识图谱专家。请基于前期推断的【
       "name": "实体名称",
       "definition": "定义",
       "examples": ["示例1"],
+      "abstractness": "surface | normalized | inductive",
+      "structure_template": {{"fields": [{{"key": "字段名", "required": true, "description": "说明"}}]}},
       "color": "#4A90D9"
     }}
   ],
@@ -133,54 +140,47 @@ COLORS = [
 ]
 
 
-async def get_or_generate_profile(project_id: str, text_samples: List[str], total_chunks: int) -> str:
-    from config import get_project_dir
-    profile_path = get_project_dir(project_id) / "schema_profile.md"
-    
-    # 每次获取新的均匀采样后，重新生成并保存，以确保覆盖更新后的文档或采样策略
-    combined = "\n\n---\n\n".join(text_samples)
-    logger.info("Generating document profile...")
-    log_extraction("=== 前置阶段：提取全局样本并进行文档宏观特征与业务逻辑剖析 ===")
-    profile_messages = [
-        {"role": "system", "content": "你是一个严谨的本体架构师，擅长快速剖析繁杂文档的深层业务逻辑和抽象实体结构。"},
-        {"role": "user", "content": DOC_PROFILING_PROMPT.format(text_samples=combined, total_chunks=total_chunks)},
-    ]
-    resp = await llm_gateway.chat(
-        messages=profile_messages,
-        complexity=COMPLEXITY_COMPLEX,
-        print_stream=True,
-        stream_log=True,
-    )
-    profile = resp["content"]
-    with open(profile_path, "w", encoding="utf-8") as f:
-        f.write(profile)
-    return profile
+async def get_or_generate_profile(project_id: str, force: bool = False) -> str:
+    """获取或生成全局领域概括（Map-Reduce，见 services/profiling.py）。返回 Markdown。"""
+    from services.profiling import map_reduce_profile
+    log_extraction("=== 前置阶段：分层抽样 + Map-Reduce 领域概括 ===")
+    global_md, _analyses, _headers = await map_reduce_profile(project_id, force=force)
+    return global_md
 
 
-    return profile
+def _format_structured_headers(structured_headers: Dict[str, List[str]]) -> str:
+    if not structured_headers:
+        return "（无结构化文件）"
+    return "\n".join(f"- {fn}：{', '.join(cols)}" for fn, cols in structured_headers.items())
 
 
-async def generate_schema_suggestion(project_id: str, text_samples: List[str], total_chunks: int) -> SchemaConfig:
-    """
-    根据文档样本生成 Schema 建议
-    """
-    # 针对冷启动项目（无分段数据）的处理
-    if total_chunks == 0:
+async def generate_schema_suggestion(project_id: str, sample_size: int = 18) -> SchemaConfig:
+    """根据输入材料生成 Schema 建议（含抽象度标注）。内部完成分层抽样与领域概括。"""
+    from services.profiling import stratified_sample, map_reduce_profile
+
+    grouped, flat, total = stratified_sample(project_id, sample_size)
+
+    # 冷启动项目（无分片数据）→ 从已导入图谱反推
+    if total == 0:
         logger.info("Cold-start project detected. Extracting schema from existing graph data...")
         return await extract_schema_from_graph_data(project_id)
 
-    combined = "\n\n---\n\n".join(text_samples)
+    combined = "\n\n---\n\n".join(flat)
 
     try:
-        # 第一阶段：获取或生成分析报告
-        document_profile = await get_or_generate_profile(project_id, text_samples, total_chunks)
+        # 第一阶段：Map-Reduce 领域概括 + 结构化表头
+        global_md, _analyses, structured_headers = await map_reduce_profile(project_id, budget=sample_size)
 
-        # 第二阶段：本体设计生成 (Schema Suggestion)
+        # 第二阶段：本体设计生成（含抽象度）
         logger.info("Executing Stage 2: Schema Ontology Design...")
         log_extraction("\n=== 本体设计阶段：具体图谱本体结构 (JSON) 评估映射 ===")
         schema_messages = [
-            {"role": "system", "content": "你是一个资深的知识图谱系统专家，你的任务是根据分析报告给出严谨且可用于图谱落地的 JSON Schema。"},
-            {"role": "user", "content": SUGGEST_PROMPT.format(document_profile=document_profile, text_samples=combined)},
+            {"role": "system", "content": "你是一个资深的知识图谱系统专家，你的任务是根据领域概括给出严谨且可用于图谱落地的 JSON Schema，并为每个实体类型标注抽取抽象度。"},
+            {"role": "user", "content": SUGGEST_PROMPT.format(
+                document_profile=global_md,
+                text_samples=combined,
+                structured_headers=_format_structured_headers(structured_headers),
+            )},
         ]
 
         result = await llm_gateway.chat_json(
@@ -198,14 +198,21 @@ async def generate_schema_suggestion(project_id: str, text_samples: List[str], t
                 return []
             return [str(x) for x in raw]
 
+        def _norm_abstractness(v):
+            return v if v in ("surface", "normalized", "inductive") else "surface"
+
         entity_types = []
         for i, et in enumerate(result.get("entity_types", [])):
             examples = _normalize_examples(et.get("examples", []))
+            ab = _norm_abstractness(et.get("abstractness", "surface"))
             entity_types.append(EntityType(
                 name=et.get("name", f"Entity_{i}"),
                 definition=et.get("definition", ""),
                 examples=examples,
                 color=et.get("color", COLORS[i % len(COLORS)]),
+                abstractness=ab,
+                evidence_mode="span" if ab == "inductive" else "verbatim",
+                structure_template=et.get("structure_template") if ab == "inductive" else None,
             ))
 
         relation_types = []
@@ -266,17 +273,18 @@ async def stream_profile_summary(project_id: str, source: str = "documents"):
 
     # documents 流程
     profile_path = get_project_dir(project_id) / "schema_profile.md"
-    sample_texts, total_chunks = _get_evenly_sampled_texts(project_id, 15)
-    if not sample_texts:
+    from services.profiling import stratified_sample
+    _grouped, flat, total = stratified_sample(project_id, 18)
+    if total == 0:
         yield "当前项目暂无文档片段，请先上传并解析文档。"
         return
     if profile_path.exists():
         with open(profile_path, "r", encoding="utf-8") as f:
             profile = f.read()
     else:
-        yield "🔍 正在对项目文档进行均匀采样与宏观特征深度剖析，请稍候... (此过程涉及复杂本体逻辑推导，可能需要 30-60 秒)\n\n"
-        profile = await get_or_generate_profile(project_id, sample_texts, total_chunks)
-        yield "✅ 文档宏观剖析完成，正在生成本体设计开场白...\n\n---\n\n"
+        yield "🔍 正在对项目文档进行分层抽样与领域概括（Map-Reduce），请稍候... (可能需要 30-60 秒)\n\n"
+        profile = await get_or_generate_profile(project_id)
+        yield "✅ 领域概括完成，正在生成本体设计开场白...\n\n---\n\n"
     sys_prompt = "你是一个面向用户的领域本体设计向导，用简洁、自然的语言介绍文档并引导用户参与 Schema 设计。只输出开场白正文，不要任何前缀或标题。"
     user_content = PROFILE_OPENING_PROMPT + "\n\n## 文档宏观图谱特征分析报告：\n" + profile
     msgs = [
@@ -287,32 +295,8 @@ async def stream_profile_summary(project_id: str, source: str = "documents"):
         yield chunk
 
 
-def _get_evenly_sampled_texts(project_id: str, sample_size: int = 15):
-    """从项目的所有分片中均匀抽取指定数量的文本样本（供 schema_suggestion 与 router 共用）。"""
-    from config import get_project_dir
-    project_dir = get_project_dir(project_id)
-    chunks_dir = project_dir / "chunks"
-    all_chunks = []
-    if chunks_dir.exists():
-        for chunk_file in chunks_dir.glob("*_chunks.json"):
-            with open(chunk_file, "r", encoding="utf-8") as f:
-                chunks = json.load(f)
-                all_chunks.extend(chunks)
-    total = len(all_chunks)
-    if total == 0:
-        return [], 0
-    if total <= sample_size:
-        sample = all_chunks
-    else:
-        step = total / sample_size
-        indices = sorted(list(set(int(i * step) for i in range(sample_size))))
-        sample = [all_chunks[i] for i in indices if i < total]
-    sample_texts = [c["text"] for c in sample]
-    return sample_texts, total
-
-
-async def chat_schema_stream(project_id: str, messages: List[dict], sample_texts: List[str], total_chunks: int, source: str = "documents"):
-    """结合历史消息与背景分析报告，流式返回大模型的回答"""
+async def chat_schema_stream(project_id: str, messages: List[dict], source: str = "documents"):
+    """结合历史消息与背景领域概括，流式返回大模型的回答"""
     from config import get_project_dir
     import os
 
@@ -331,9 +315,9 @@ async def chat_schema_stream(project_id: str, messages: List[dict], sample_texts
             with open(profile_path, "r", encoding="utf-8") as f:
                 profile = f.read()
         else:
-            yield "🔍 背景报告不存在，正在为您重新剖析文档特征...\n\n"
-            profile = await get_or_generate_profile(project_id, sample_texts, total_chunks)
-            yield "✅ 剖析完成，正在处理您的提问...\n\n---\n\n"
+            yield "🔍 背景报告不存在，正在为您进行领域概括...\n\n"
+            profile = await get_or_generate_profile(project_id)
+            yield "✅ 概括完成，正在处理您的提问...\n\n---\n\n"
         sys_prompt = SCHEMA_CHAT_SYS_PROMPT.format(document_profile=profile)
 
     msgs = [{"role": "system", "content": sys_prompt}]
@@ -380,11 +364,17 @@ async def generate_schema_from_chat(messages: List[dict]) -> SchemaConfig:
         entity_types = []
         for i, et in enumerate(result.get("entity_types", [])):
             examples = _normalize_examples(et.get("examples", []))
+            ab = et.get("abstractness", "surface")
+            if ab not in ("surface", "normalized", "inductive"):
+                ab = "surface"
             entity_types.append(EntityType(
                 name=et.get("name", f"Entity_{i}"),
                 definition=et.get("definition", ""),
                 examples=examples,
                 color=et.get("color", COLORS[i % len(COLORS)]),
+                abstractness=ab,
+                evidence_mode="span" if ab == "inductive" else "verbatim",
+                structure_template=et.get("structure_template") if ab == "inductive" else None,
             ))
 
         relation_types = []

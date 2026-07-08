@@ -1,6 +1,8 @@
 """
 文档解析器
-支持 PDF、TXT、Markdown、DOCX、CSV 格式的文本提取
+支持 PDF、TXT、Markdown、DOCX（含表格）、CSV、XLSX 格式的文本提取。
+结构化文件（CSV/XLSX）统一输出为「表头行 + 每行 col | col | col」，
+首个非空行即表头，供输入理解阶段作为候选 Schema 信号。
 """
 import csv
 from pathlib import Path
@@ -12,7 +14,7 @@ def parse_document(file_path: Path, file_type: str) -> str:
 
     Args:
         file_path: 文件路径
-        file_type: 文件类型 (pdf/txt/md/docx/csv)
+        file_type: 文件类型 (pdf/txt/md/docx/csv/xlsx)
 
     Returns:
         提取的纯文本
@@ -23,6 +25,7 @@ def parse_document(file_path: Path, file_type: str) -> str:
         "md": _parse_markdown,
         "docx": _parse_docx,
         "csv": _parse_csv,
+        "xlsx": _parse_xlsx,
     }
 
     parser = parsers.get(file_type)
@@ -111,6 +114,26 @@ def _parse_csv(file_path: Path) -> str:
         except UnicodeDecodeError:
             continue
     raise ValueError("CSV 文件编码不受支持，请使用 UTF-8 或 GB18030 编码")
+
+
+def _parse_xlsx(file_path: Path) -> str:
+    """解析 Excel（.xlsx）。多工作表分别输出，每表首行为表头。"""
+    from openpyxl import load_workbook
+
+    wb = load_workbook(str(file_path), read_only=True, data_only=True)
+    sheets = []
+    for ws in wb.worksheets:
+        rows = []
+        for row in ws.iter_rows(values_only=True):
+            cells = [("" if v is None else str(v)).strip() for v in row]
+            if any(cells):
+                rows.append(" | ".join(cells))
+        if rows:
+            # 多表时标注表名，便于后续识别表间关系
+            header = f"# 工作表: {ws.title}" if len(wb.worksheets) > 1 else ""
+            sheets.append((header + "\n" if header else "") + "\n".join(rows))
+    wb.close()
+    return "\n\n".join(sheets)
 
 
 def _clean_text(text: str) -> str:
