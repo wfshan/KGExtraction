@@ -63,16 +63,16 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
     const [previewLoading, setPreviewLoading] = useState(false);
     const [previewDoc, setPreviewDoc] = useState<Document | null>(null);
 
-    const loadDocs = async () => {
+    const loadDocs = async (silent = false) => {
         if (!projectId) return;
-        setLoading(true);
+        if (!silent) setLoading(true);
         try {
             const res = await listDocuments(projectId);
             setDocs(res.data);
         } catch {
-            message.error('加载文档列表失败');
+            if (!silent) message.error('加载文档列表失败');
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     };
 
@@ -90,6 +90,14 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
         loadDocs();
         loadGraphStats();
     }, [projectId]);
+
+    // 解析在后台进行：有文档处于「解析中」时轮询刷新，直到全部解析完成/出错
+    useEffect(() => {
+        const hasParsing = docs.some((d) => d.status === 'parsing');
+        if (!hasParsing) return;
+        const timer = window.setInterval(() => { loadDocs(true); }, 1500);
+        return () => window.clearInterval(timer);
+    }, [docs]);
 
     const handleUpload: UploadProps['customRequest'] = async (options) => {
         const { file, onSuccess, onError } = options;
@@ -453,9 +461,10 @@ export default function DocumentUpload({ projectId, onNext, onPrev }: Props) {
                 {chunkMethod === 'hierarchical' && (
                     <div style={{ marginBottom: 16 }}>
                         <div style={{ fontWeight: 'bold', marginBottom: 8 }}>目标切分层级 (Level)</div>
-                        <Alert 
-                            message="根据标题深度切分。分片内容将包含其所属的所有上级标题作为上下文。" 
-                            type="success" 
+                        <Alert
+                            message="根据标题深度切分。分片内容将包含其所属的所有上级标题作为上下文。"
+                            description="适用 Markdown 与带标题样式的 DOCX；PDF 无标题结构信息，仅当正文含「第X章 / 1.1 / 一、」等编号样式时可识别层级，否则将退化为整体切分。"
+                            type="success"
                             style={{marginBottom: 12, fontSize: 12}}
                         />
                         <Space style={{ width: '100%' }}>

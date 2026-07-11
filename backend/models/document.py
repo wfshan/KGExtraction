@@ -20,6 +20,7 @@ class Document(BaseModel):
         description="上传时间"
     )
     status: str = Field(default="uploaded", description="状态: uploaded/parsing/parsed/error")
+    content_hash: Optional[str] = Field(default=None, description="文件内容 SHA-256，用于重复上传检测")
     chunk_count: int = Field(default=0, description="分片数量")
     text_length: int = Field(default=0, description="文本总字符数")
     error_message: Optional[str] = Field(default=None, description="错误信息")

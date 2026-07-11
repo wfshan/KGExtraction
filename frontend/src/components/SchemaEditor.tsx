@@ -248,8 +248,9 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
         try {
             await updateSchema(projectId, newSchema);
             setSchema(newSchema);
-        } catch {
-            message.error('保存失败');
+        } catch (err: any) {
+            // 悬空关系等一致性校验失败时，后端返回 422 + 具体原因，直接透传给用户
+            message.error(err.response?.data?.detail || '保存失败');
         }
     };
 
@@ -591,12 +592,70 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
                                         onBlur={autoSave}
                                     />
                                     {(et.abstractness === 'inductive') && (
-                                        <Alert
-                                            type="warning"
-                                            showIcon
-                                            style={{ fontSize: 12 }}
-                                            message="归纳类型：将从案例概括抽象知识，证据为源案例摘录（不逐字校验，靠归纳忠实度把关）。建议在定义中写清期望的粒度与可判别条件。"
-                                        />
+                                        <>
+                                            <Alert
+                                                type="warning"
+                                                showIcon
+                                                style={{ fontSize: 12 }}
+                                                message="归纳类型：将从案例概括抽象知识，证据为源案例摘录（不逐字校验，靠归纳忠实度把关）。建议在定义中写清期望的粒度与可判别条件。"
+                                            />
+                                            {/* 结构模板：归纳产物的结构约束，抽取后由 validate_structure 挡掉缺必填字段的空泛归纳 */}
+                                            <div style={{ background: 'var(--gray-50, #fafafa)', border: '1px dashed var(--gray-300, #d9d9d9)', borderRadius: 6, padding: 8 }}>
+                                                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+                                                    结构模板（归纳产物须具备的字段；必填字段缺失或空泛时将被结构校验拦下）
+                                                </div>
+                                                {(et.structure_template?.fields || []).map((f, fi) => (
+                                                    <Space key={fi} size={4} style={{ marginBottom: 4, width: '100%' }}>
+                                                        <Input
+                                                            size="small" placeholder="字段名（如：触发条件）" value={f.key} style={{ width: 130 }}
+                                                            onChange={(e) => {
+                                                                const fields = [...(et.structure_template?.fields || [])];
+                                                                fields[fi] = { ...fields[fi], key: e.target.value };
+                                                                updateEntityType(i, 'structure_template', { fields });
+                                                            }}
+                                                            onBlur={autoSave}
+                                                        />
+                                                        <Select
+                                                            size="small" value={f.required ? 'required' : 'optional'} style={{ width: 76 }}
+                                                            options={[{ label: '必填', value: 'required' }, { label: '可选', value: 'optional' }]}
+                                                            onChange={(v) => {
+                                                                const fields = [...(et.structure_template?.fields || [])];
+                                                                fields[fi] = { ...fields[fi], required: v === 'required' };
+                                                                updateEntityType(i, 'structure_template', { fields });
+                                                                autoSave();
+                                                            }}
+                                                        />
+                                                        <Input
+                                                            size="small" placeholder="说明（如：可判别的量化条件，禁止空泛表述）" value={f.description}
+                                                            style={{ width: 300 }}
+                                                            onChange={(e) => {
+                                                                const fields = [...(et.structure_template?.fields || [])];
+                                                                fields[fi] = { ...fields[fi], description: e.target.value };
+                                                                updateEntityType(i, 'structure_template', { fields });
+                                                            }}
+                                                            onBlur={autoSave}
+                                                        />
+                                                        <Button
+                                                            size="small" type="text" danger icon={<DeleteOutlined />}
+                                                            onClick={() => {
+                                                                const fields = (et.structure_template?.fields || []).filter((_, x) => x !== fi);
+                                                                updateEntityType(i, 'structure_template', fields.length ? { fields } : null);
+                                                                autoSave();
+                                                            }}
+                                                        />
+                                                    </Space>
+                                                ))}
+                                                <Button
+                                                    size="small" type="dashed" icon={<PlusOutlined />}
+                                                    onClick={() => {
+                                                        const fields = [...(et.structure_template?.fields || []), { key: '', required: false, description: '' }];
+                                                        updateEntityType(i, 'structure_template', { fields });
+                                                    }}
+                                                >
+                                                    添加结构字段
+                                                </Button>
+                                            </div>
+                                        </>
                                     )}
                                     <Input
                                         placeholder="示例实例（逗号分隔，如：张三, 李四）"

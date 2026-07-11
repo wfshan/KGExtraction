@@ -48,10 +48,12 @@ def reset_usage(project_id: str, run_id: str):
         _usage.pop((project_id, run_id), None)
 
 
-def estimate_run_cost(total_chunks: int, config) -> Dict:
+def estimate_run_cost(total_chunks: int, config, has_inductive_types: bool = False) -> Dict:
     """启动前的确定性成本预估（不调用任何 LLM）。
 
     每分片调用次数 = 抽取(1 或 2) + 消歧(≤1) + 跨片段(≤1) + 自我修正(≤1)。
+    Schema 含归纳类型（inductive）时走归纳分道，每分片额外 +2 次调用
+    （归纳抽取 + 忠实度校验），且归纳用强力模型，实际费用更高——预估中单列出来供用户感知。
     token 估算 = 分片长度 + prompt 开销（Schema/指令 ≈ 1200 字符）折算 token（中文 ≈ 1 字/`token`
     的保守近似取 0.8 字/token），输出按每次调用 ≈ 600 token 估。
     这是量级估计，用于用户决策，不是计费依据。
@@ -63,6 +65,9 @@ def estimate_run_cost(total_chunks: int, config) -> Dict:
         calls_per_chunk += 1
     if getattr(config, "enable_self_correction", False):
         calls_per_chunk += 1
+
+    inductive_calls_per_chunk = 2 if has_inductive_types else 0
+    calls_per_chunk += inductive_calls_per_chunk
 
     chunk_size = int(getattr(config, "chunk_size", 500))
     prompt_overhead_chars = 1200
@@ -84,6 +89,8 @@ def estimate_run_cost(total_chunks: int, config) -> Dict:
     return {
         "total_chunks": total_chunks,
         "calls_per_chunk": calls_per_chunk,
+        "inductive_calls_per_chunk": inductive_calls_per_chunk,
+        "estimated_inductive_calls": total_chunks * inductive_calls_per_chunk,
         "estimated_calls": total_calls,
         "estimated_input_tokens": est_input,
         "estimated_output_tokens": est_output,

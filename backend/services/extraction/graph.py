@@ -761,6 +761,19 @@ async def run_extraction_pipeline_sync(
     # 这些节点/边属于文档结构层，图算法（子图/PPR/社区）默认不参与（见 graph_store 层分离）。
     await _add_document_structure(project_id, all_chunks, orphan_chunk_ids, add_nodes_to_draft, add_edges_to_draft, run_id)
 
+    # 归纳知识治理收尾：先跨案例语义归并（同一知识不同措辞合并、支撑证据累积），
+    # 再按归并后的「支撑案例数」客观化可信度，取代 LLM 自报
+    try:
+        from services.extraction.induction import merge_semantic_inductive, objectify_inductive_confidence
+        n_merged = await merge_semantic_inductive(project_id)
+        if n_merged:
+            log_extraction(f"[归纳治理] 语义归并完成：{n_merged} 条同义归纳知识已合并，支撑证据已累积")
+        n_obj = objectify_inductive_confidence(project_id)
+        if n_obj:
+            log_extraction(f"[归纳治理] 已按支撑案例数客观化 {n_obj} 个归纳知识的可信度")
+    except Exception as e:
+        log_extraction(f"[归纳治理] 语义归并/可信度客观化失败: {e}", "WARNING")
+
     # 后验本体批量修正（OAK+MEND），可选
     if getattr(config, "enable_post_correction", False):
         try:

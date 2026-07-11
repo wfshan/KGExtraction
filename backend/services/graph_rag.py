@@ -457,6 +457,7 @@ async def _build_global_context(
     project_id: str,
     query: str,
     mode_profile: Dict[str, int],
+    session_id: str = "default",
 ) -> Tuple[List[Dict[str, str]], List[Dict], Dict]:
     """基于已构建的社区摘要回答全局/主题型问题。"""
     from services.community import load_communities
@@ -481,7 +482,7 @@ async def _build_global_context(
 [图谱社区摘要]
 {summaries_text}
 """
-    history = load_history(project_id)
+    history = load_history(project_id, session_id)
     messages = [{"role": "system", "content": sys_prompt.strip()}]
     for msg in history:
         if msg["role"] == "system":
@@ -510,7 +511,8 @@ async def build_context_prompt(
     query: str,
     max_degree: int = 1,
     max_start_entities: int = 5,
-    retrieval_mode: str = "graph_flow"
+    retrieval_mode: str = "graph_flow",
+    session_id: str = "default",
 ) -> Tuple[List[Dict[str, str]], List[Dict], Dict]:
     """构建携带 RAG 上下文的对话 Prompt；支持多种检索模式。"""
     start_time = time.time()
@@ -523,7 +525,7 @@ async def build_context_prompt(
 
     # 模式 global: 基于社区摘要的全局问答（Microsoft GraphRAG 模式）
     if retrieval_mode == "global":
-        return await _build_global_context(project_id, query, mode_profile)
+        return await _build_global_context(project_id, query, mode_profile, session_id=session_id)
 
     # 2. 只有 graph 相关的模式才需要进行图匹配
     nodes_info = []
@@ -721,7 +723,7 @@ async def build_context_prompt(
     """
     
     # 获取历史记录
-    history = load_history(project_id)
+    history = load_history(project_id, session_id)
     
     # 重组消息
     messages = [{"role": "system", "content": sys_prompt.strip()}]
@@ -767,14 +769,16 @@ async def stream_chat_rag(
     query: str,
     max_degree: int = 2,
     max_start_entities: int = 5,
-    retrieval_mode: str = "graph_flow"
+    retrieval_mode: str = "graph_flow",
+    session_id: str = "default",
 ):
     """进行 RAG 问答，并流式返回结果；支持可配置的检索深度与起点实体数。
 
     retrieval_mode="auto"（默认推荐）时按查询特征自动路由到合适的检索模式。
+    session_id 隔离多会话/多用户的对话历史。
     """
     # 1. 保存用户的提问到历史
-    await add_message(project_id, "user", query)
+    await add_message(project_id, "user", query, session_id=session_id)
 
     # 1.5 自动路由
     if retrieval_mode == "auto":
@@ -792,11 +796,12 @@ async def stream_chat_rag(
     
     try:
         messages, _, recall_info = await build_context_prompt(
-            project_id, 
-            query, 
-            max_degree=max_degree, 
+            project_id,
+            query,
+            max_degree=max_degree,
             max_start_entities=max_start_entities,
-            retrieval_mode=retrieval_mode
+            retrieval_mode=retrieval_mode,
+            session_id=session_id,
         )
         # 3. 此时已经拿到召回信息，先发给前端一个特殊的标记包
         yield f"__RECALL_START__{json.dumps(recall_info, ensure_ascii=False)}__RECALL_END__"
@@ -812,4 +817,4 @@ async def stream_chat_rag(
         yield chunk
         
     # 5. 生成完毕后，保存助手的回答到历史
-    await add_message(project_id, "assistant", full_response)
+    await add_message(project_id, "assistant", full_response, session_id=session_id)

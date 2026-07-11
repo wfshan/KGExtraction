@@ -74,11 +74,19 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
         }
     };
 
-    // Staleness check
+    // Staleness check：阈值随任务实际节奏自适应——长文档单片调用可能正常超过固定 3 分钟。
+    // 阈值 = max(3 分钟, 3 × 已完成分片的平均耗时)，避免慢任务被误报"疑似中断"。
     useEffect(() => {
         if (run && run.status === 'running') {
             const timeDiff = Date.now() - new Date(run.updated_at).getTime();
-            setIsStalled(timeDiff > 180000); // 3m timeout
+            let threshold = 180000; // 3m 下限
+            const processed = run.stats?.processed_chunks || 0;
+            if (processed > 0) {
+                const elapsed = Date.now() - new Date(run.created_at).getTime();
+                const avgPerChunk = elapsed / processed;
+                threshold = Math.max(threshold, avgPerChunk * 3);
+            }
+            setIsStalled(timeDiff > threshold);
         } else {
             setIsStalled(false);
         }
@@ -217,6 +225,11 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                 <Descriptions column={1} size="small" style={{ marginTop: 12 }}>
                     <Descriptions.Item label="待处理分片">{est.total_chunks} 个</Descriptions.Item>
                     <Descriptions.Item label="每分片 LLM 调用">{est.calls_per_chunk} 次（由抽取模式与消歧/跨片段/自修正开关决定）</Descriptions.Item>
+                    {(est.inductive_calls_per_chunk ?? 0) > 0 && (
+                        <Descriptions.Item label="其中归纳分道">
+                            每分片 +{est.inductive_calls_per_chunk} 次（归纳抽取 + 忠实度校验，共约 {est.estimated_inductive_calls} 次，使用强力模型、更贵更慢）
+                        </Descriptions.Item>
+                    )}
                     <Descriptions.Item label="预计调用总数">约 {est.estimated_calls} 次</Descriptions.Item>
                     <Descriptions.Item label="预计 token 消耗">
                         约 {(est.estimated_total_tokens / 1000).toFixed(0)}k（输入 {(est.estimated_input_tokens / 1000).toFixed(0)}k + 输出 {(est.estimated_output_tokens / 1000).toFixed(0)}k）
@@ -680,7 +693,7 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                     showIcon
                     style={{ marginBottom: 16 }}
                     message="抽取流程由本体编译而来"
-                    description="当前为默认计划（等价于系统配置的固定流程）。后续版本将支持大模型按本体规划专用流程，并让抽象知识（概念/规则）走不同的归纳与校验步骤。"
+                    description="该计划由当前 Schema 编译生成：归纳类型（概念/规则）会走归纳抽取与忠实度校验，表面类型走逐字抽取与证据校验。如需调整各类型的抽取语义，可到 Schema 配置页的「智能规划」重新规划。"
                 />
                 {planLoading ? (
                     <div style={{ textAlign: 'center', padding: 24 }}>加载中...</div>

@@ -28,6 +28,8 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
     const [rejected, setRejected] = useState<RejectedItemsResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [onlyPending, setOnlyPending] = useState(true);
+    const [riskOnly, setRiskOnly] = useState(false);
+    const [violationFilter, setViolationFilter] = useState<string | null>(null);
 
     const loadAll = async () => {
         setLoading(true);
@@ -60,7 +62,22 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
         }
     };
 
-    const items = (queue?.items || []).filter(it => !onlyPending || it.review_status === 'pending');
+    // 高风险判定按抽象度分道：表面知识看违规/未验证证据/低置信度；归纳知识看支撑案例数（<2 例）
+    const isHighRisk = (it: ReviewItem) => {
+        if (it.violations.length > 0) return true;
+        if (it.abstractness === 'inductive') return (it.support_cases ?? 0) < 2;
+        return !it.evidence_verified || (it.confidence ?? 1) < 0.8;
+    };
+
+    const allItems = (queue?.items || []).filter(it => !onlyPending || it.review_status === 'pending');
+
+    // 按违规原因聚合：一眼看出哪类问题贡献了最多待复核项，点击即过滤
+    const violationCounts: Record<string, number> = {};
+    allItems.forEach(it => it.violations.forEach(v => { violationCounts[v] = (violationCounts[v] || 0) + 1; }));
+
+    const items = allItems
+        .filter(it => !riskOnly || isHighRisk(it))
+        .filter(it => !violationFilter || it.violations.includes(violationFilter));
 
     const queueColumns = [
         {
@@ -79,6 +96,11 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                     <Space size={4}>
                         <Text strong>{title}</Text>
                         {record.entity_type && <Tag style={{ fontSize: 11 }}>{record.entity_type}</Tag>}
+                        {record.abstractness === 'inductive' && (
+                            <Tooltip title="归纳知识：从案例概括的抽象知识，可信度看支撑案例数与忠实度校验，而非逐字证据">
+                                <Tag color="purple" style={{ fontSize: 11 }}>归纳</Tag>
+                            </Tooltip>
+                        )}
                         {record.change === 'changed' && <Tag color="gold" style={{ fontSize: 11 }}>变更</Tag>}
                         {record.review_status === 'approved' && <Tag color="green" style={{ fontSize: 11 }}>已通过</Tag>}
                     </Space>
@@ -96,20 +118,38 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
             ),
         },
         {
+            // 证据语义按抽象度分道：表面知识看「逐字命中原文」，归纳知识看「忠实度校验」
             title: '证据',
             key: 'evidence',
-            width: 90,
-            render: (_: any, record: ReviewItem) =>
-                record.evidence_verified
-                    ? <Tag color="green" icon={<SafetyCertificateOutlined />}>已验证</Tag>
-                    : <Tooltip title="证据短句未能逐字命中原文，或无证据"><Tag color="red">未验证</Tag></Tooltip>,
+            width: 100,
+            render: (_: any, record: ReviewItem) => {
+                if (record.abstractness === 'inductive') {
+                    return record.evidence_verified
+                        ? <Tooltip title="归纳知识：忠实度校验通过（源案例支撑其概括）"><Tag color="green" icon={<SafetyCertificateOutlined />}>忠实度通过</Tag></Tooltip>
+                        : <Tooltip title="归纳知识：缺少源案例摘录支撑，需人工核实其是否有据可依"><Tag color="orange">待核实</Tag></Tooltip>;
+                }
+                return record.evidence_verified
+                    ? <Tooltip title="表面知识：证据短句逐字命中原文"><Tag color="green" icon={<SafetyCertificateOutlined />}>已验证</Tag></Tooltip>
+                    : <Tooltip title="表面知识：证据短句未能逐字命中原文，或无证据"><Tag color="red">未验证</Tag></Tooltip>;
+            },
         },
         {
-            title: '置信度',
-            dataIndex: 'confidence',
+            // 可信度按抽象度分道：归纳知识以「支撑案例数」为客观依据，表面知识用置信度百分比
+            title: '可信度',
             key: 'confidence',
-            width: 85,
-            render: (v: number) => <Tag color={v >= 0.8 ? 'green' : 'orange'}>{((v ?? 1) * 100).toFixed(0)}%</Tag>,
+            width: 100,
+            render: (_: any, record: ReviewItem) => {
+                if (record.abstractness === 'inductive') {
+                    const n = record.support_cases ?? 0;
+                    return (
+                        <Tooltip title="支撑案例数：有多少个来源片段独立归纳出该知识。案例越多越可信；仅 1 例需重点复核">
+                            <Tag color={n >= 2 ? 'green' : 'orange'}>{n} 例支撑</Tag>
+                        </Tooltip>
+                    );
+                }
+                const v = record.confidence;
+                return <Tag color={v >= 0.8 ? 'green' : 'orange'}>{((v ?? 1) * 100).toFixed(0)}%</Tag>;
+            },
         },
         {
             title: '来源',
@@ -193,9 +233,32 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                             <Button size="small" onClick={() => setOnlyPending(!onlyPending)}>
                                 {onlyPending ? '显示已通过的项' : '隐藏已通过的项'}
                             </Button>
+                            <Tooltip title="高风险 = 门控违规 / 证据未验证 / 表面知识置信度<80% / 归纳知识仅 1 例支撑">
+                                <Button size="small" type={riskOnly ? 'primary' : 'default'} onClick={() => setRiskOnly(!riskOnly)}>
+                                    仅看高风险
+                                </Button>
+                            </Tooltip>
                         </Space>
                     }
                 />
+            )}
+            {Object.keys(violationCounts).length > 0 && (
+                <Space wrap size={4} style={{ marginBottom: 12 }}>
+                    <Text type="secondary" style={{ fontSize: 12 }}>按违规原因过滤：</Text>
+                    {Object.entries(violationCounts).sort((a, b) => b[1] - a[1]).map(([reason, count]) => (
+                        <Tag
+                            key={reason}
+                            color={violationFilter === reason ? 'red' : 'default'}
+                            style={{ cursor: 'pointer', fontSize: 11 }}
+                            onClick={() => setViolationFilter(violationFilter === reason ? null : reason)}
+                        >
+                            {reason} × {count}
+                        </Tag>
+                    ))}
+                    {violationFilter && (
+                        <Button size="small" type="link" onClick={() => setViolationFilter(null)}>清除过滤</Button>
+                    )}
+                </Space>
             )}
             <Tabs
                 items={[

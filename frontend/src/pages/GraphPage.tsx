@@ -19,7 +19,7 @@ import cytoscape from 'cytoscape';
 import type { Core, EventObject } from 'cytoscape';
 import {
     listProjects, getGraph, getSchema, exportGraph, getChunksByIds, chatWithGraphStream,
-    getChatHistory, clearChatHistory, searchEntities, getProjectSubgraph,
+    getChatHistory, clearChatHistory, resetChatSession, searchEntities, getProjectSubgraph,
     buildCommunities, getCommunities
 } from '../api';
 import type {
@@ -57,6 +57,30 @@ const GRAPH_RAG_MODE_LABEL: Record<string, string> = {
     text_only: '仅文本块',
     direct: '模型直答',
 };
+
+// 大图阈值：超过后 cose 力导向布局抖动且开销大，降级为确定性的 concentric（按度数同心圆）布局
+const LARGE_GRAPH_NODE_THRESHOLD = 500;
+
+function pickLayout(nodeCount: number, idealEdgeLength = 120, duration = 800): any {
+    if (nodeCount > LARGE_GRAPH_NODE_THRESHOLD) {
+        return {
+            name: 'concentric',
+            animate: false,
+            concentric: (node: any) => node.degree(),
+            levelWidth: () => 2,
+            minNodeSpacing: 24,
+        };
+    }
+    return {
+        name: 'cose',
+        animate: true,
+        animationDuration: duration,
+        nodeOverlap: 20,
+        idealEdgeLength: () => idealEdgeLength,
+        nodeRepulsion: () => 8000,
+        gravity: 0.25,
+    };
+}
 
 export default function GraphPage() {
     const { projectId: routeProjectId } = useParams<{ projectId: string }>();
@@ -129,6 +153,14 @@ export default function GraphPage() {
         } catch (error) {
             message.error('清空失败');
         }
+    };
+
+    // 开启新会话：换会话 ID（旧会话历史保留在服务端），清空当前窗口消息
+    const handleNewSession = () => {
+        if (!selectedProject) return;
+        resetChatSession(selectedProject);
+        setChatMessages([]);
+        message.success('已开启新会话');
     };
 
     // 社区摘要：global 问答模式的前置依赖。加载已构建数量，供 UI 判断是否需要提示构建
@@ -260,11 +292,13 @@ export default function GraphPage() {
     useEffect(() => {
         if (!graph || !containerRef.current) return;
 
-        // Entity type → color mapping
+        // Entity type → color / abstractness mapping
         const colorMap: Record<string, string> = {};
+        const abstractnessMap: Record<string, string> = {};
         if (schema) {
             schema.entity_types.forEach((et) => {
                 colorMap[et.name] = et.color;
+                abstractnessMap[et.name] = et.abstractness || 'surface';
             });
         }
         const defaultColors = ['#4A90D9', '#50C878', '#FF6B6B', '#FFD93D', '#9B59B6', '#1ABC9C', '#E67E22'];
@@ -292,6 +326,7 @@ export default function GraphPage() {
                         label: node.name,
                         entityType: node.entity_type,
                         color: colorMap[node.entity_type],
+                        abstractness: abstractnessMap[node.entity_type] || 'surface',
                     },
                 };
             }),
@@ -333,6 +368,16 @@ export default function GraphPage() {
                         },
                     },
                     {
+                        // 归纳知识（概念/规则）用菱形 + 虚线边框区分于表面实体，一眼看出"这是概括出来的抽象知识"
+                        selector: 'node[abstractness = "inductive"]',
+                        style: {
+                            shape: 'diamond',
+                            'border-width': 3,
+                            'border-color': '#9B59B6',
+                            'border-style': 'dashed',
+                        },
+                    },
+                    {
                         selector: 'node:selected',
                         style: {
                             'border-width': 4,
@@ -366,15 +411,7 @@ export default function GraphPage() {
                         },
                     },
                 ],
-                layout: {
-                    name: 'cose',
-                    animate: true,
-                    animationDuration: 800,
-                    nodeOverlap: 20,
-                    idealEdgeLength: () => 120,
-                    nodeRepulsion: () => 8000,
-                    gravity: 0.25,
-                } as any,
+                layout: pickLayout(elements.filter(e => !e.data.source).length) as any,
                 minZoom: 0.1,
                 maxZoom: 5,
                 wheelSensitivity: 0.2, // 降低鼠标滚轮缩放灵敏度
@@ -455,13 +492,7 @@ export default function GraphPage() {
 
                 // 如果节点数量增加，重新运行布局
                 if (cy!.nodes().length !== visibleNodes.length || elements.length > cy!.elements().length) {
-                    cy!.layout({
-                        name: 'cose',
-                        animate: true,
-                        animationDuration: 500,
-                        nodeOverlap: 20,
-                        idealEdgeLength: () => 100,
-                    } as any).run();
+                    cy!.layout(pickLayout(cy!.nodes().length, 100, 500)).run();
                 }
             });
         }
@@ -487,14 +518,7 @@ export default function GraphPage() {
     const zoomOut = () => cyRef.current?.zoom(cyRef.current.zoom() / 1.3);
     const fitAll = () => cyRef.current?.fit(undefined, 50);
     const resetLayout = () => {
-        cyRef.current?.layout({
-            name: 'cose',
-            animate: true,
-            animationDuration: 800,
-            nodeOverlap: 20,
-            idealEdgeLength: () => 120,
-            nodeRepulsion: () => 8000,
-        } as any).run();
+        cyRef.current?.layout(pickLayout(cyRef.current.nodes().length)).run();
     };
 
     const handleExport = async () => {
@@ -862,12 +886,22 @@ export default function GraphPage() {
                                     <Descriptions.Item label="名称">{selectedElement.data.name}</Descriptions.Item>
                                     <Descriptions.Item label="类型">
                                         <Tag color="blue">{selectedElement.data.entityType || selectedElement.data.entity_type}</Tag>
+                                        {selectedElement.data.abstractness === 'inductive' && (
+                                            <Tooltip title="归纳知识：从案例概括的抽象知识，可信度由支撑案例数决定">
+                                                <Tag color="purple">归纳</Tag>
+                                            </Tooltip>
+                                        )}
                                     </Descriptions.Item>
-                                    <Descriptions.Item label="置信度">
+                                    <Descriptions.Item label={selectedElement.data.abstractness === 'inductive' ? '可信度' : '置信度'}>
                                         {((selectedElement.data.confidence || 1) * 100).toFixed(0)}%
+                                        {selectedElement.data.abstractness === 'inductive' && (
+                                            <Text type="secondary" style={{ fontSize: 11, marginLeft: 6 }}>
+                                                （由 {(selectedElement.data.source_chunk_ids || []).filter((c: string) => c !== 'cold_start').length} 个支撑案例得出）
+                                            </Text>
+                                        )}
                                     </Descriptions.Item>
-                                    <Descriptions.Item label="来源片段">
-                                        {selectedElement.data.source_chunk_ids?.length || 0} 个
+                                    <Descriptions.Item label={selectedElement.data.abstractness === 'inductive' ? '支撑案例' : '来源片段'}>
+                                        {(selectedElement.data.source_chunk_ids || []).filter((c: string) => c !== 'cold_start').length} 个
                                         {hasColdStart && <Tag color="orange" style={{ marginLeft: 4 }}>冷启动</Tag>}
                                     </Descriptions.Item>
                                     {selectedElement.data.properties && Object.keys(selectedElement.data.properties).length > 0 && (
@@ -959,16 +993,21 @@ export default function GraphPage() {
                             <MessageOutlined style={{ color: 'var(--primary-color)' }} />
                             <span>问图 (GraphRAG)</span>
                         </Space>
-                        <Popconfirm
-                            title="清空对话记录"
-                            description="确定要清空与当前图谱的所有历史对话记录吗？"
-                            onConfirm={handleClearChat}
-                            okText="清空"
-                            cancelText="取消"
-                            placement="bottomRight"
-                        >
-                            <Button type="text" danger icon={<DeleteOutlined />} size="small">清空</Button>
-                        </Popconfirm>
+                        <Space size={0}>
+                            <Tooltip title="开启新会话：当前会话历史将保留在服务端，但不再作为上下文">
+                                <Button type="text" size="small" onClick={handleNewSession}>新会话</Button>
+                            </Tooltip>
+                            <Popconfirm
+                                title="清空对话记录"
+                                description="确定要清空当前会话的历史对话记录吗？"
+                                onConfirm={handleClearChat}
+                                okText="清空"
+                                cancelText="取消"
+                                placement="bottomRight"
+                            >
+                                <Button type="text" danger icon={<DeleteOutlined />} size="small">清空</Button>
+                            </Popconfirm>
+                        </Space>
                     </div>
                 }
                 placement="left"
@@ -1102,14 +1141,20 @@ export default function GraphPage() {
                                 }}
                                 style={{ width: 130 }}
                                 options={[
+                                    // 默认只推「智能路由」，其余检索方式收进「高级」，降低终端用户的概念门槛
                                     { label: '智能路由（推荐）', value: 'auto' },
-                                    { label: '独立流式', value: 'graph_flow' },
-                                    { label: '全向扩散', value: 'graph_full' },
-                                    { label: '路径查找', value: 'graph_path' },
-                                    { label: '关联检索', value: 'hippo' },
-                                    { label: '全局摘要', value: 'global' },
-                                    { label: '仅文本块', value: 'text_only' },
-                                    { label: '模型直答', value: 'direct' },
+                                    {
+                                        label: '高级（手动指定检索方式）',
+                                        options: [
+                                            { label: '独立流式', value: 'graph_flow' },
+                                            { label: '全向扩散', value: 'graph_full' },
+                                            { label: '路径查找', value: 'graph_path' },
+                                            { label: '关联检索', value: 'hippo' },
+                                            { label: '全局摘要', value: 'global' },
+                                            { label: '仅文本块', value: 'text_only' },
+                                            { label: '模型直答', value: 'direct' },
+                                        ],
+                                    },
                                 ]}
                             />
                             <Tooltip title={

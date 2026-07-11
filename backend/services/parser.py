@@ -59,7 +59,11 @@ def _parse_txt(file_path: Path) -> str:
 
 
 def _parse_markdown(file_path: Path) -> str:
-    """解析 Markdown 文件，剥离标记保留纯文本"""
+    """解析 Markdown 文件，剥离行内标记但保留标题的 "#" 前缀。
+
+    标题标记是层次切分（hierarchical）识别层级的依据；此前被一并剥离，
+    导致解析后的纯文本无法再按标题层级切分。
+    """
     from markdown_it import MarkdownIt
 
     with open(file_path, "r", encoding="utf-8") as f:
@@ -69,26 +73,60 @@ def _parse_markdown(file_path: Path) -> str:
     tokens = md.parse(md_text)
 
     texts = []
+    heading_level = 0
     for token in tokens:
+        if token.type == "heading_open":
+            tag = token.tag or "h1"
+            heading_level = int(tag[1]) if len(tag) > 1 and tag[1].isdigit() else 1
+            continue
+        if token.type == "heading_close":
+            heading_level = 0
+            continue
         if token.children:
-            for child in token.children:
-                if child.type == "text" or child.type == "code_inline":
-                    texts.append(child.content)
+            content = "".join(
+                child.content for child in token.children
+                if child.type in ("text", "code_inline")
+            )
+            if not content:
+                continue
+            if heading_level and content.strip():
+                texts.append(f"{'#' * heading_level} {content.strip()}")
+            else:
+                texts.append(content)
         elif token.content:
             texts.append(token.content)
 
     return "\n".join(texts)
 
 
+def _docx_heading_level(paragraph) -> int:
+    """识别 DOCX 段落的标题层级（Heading 1-6 / 标题 1-6），非标题返回 0。"""
+    import re
+    try:
+        style_name = paragraph.style.name or ""
+    except Exception:
+        return 0
+    m = re.match(r"^(?:Heading|标题)\s*([1-6])$", style_name.strip(), re.IGNORECASE)
+    return int(m.group(1)) if m else 0
+
+
 def _parse_docx(file_path: Path) -> str:
-    """解析 DOCX 文件"""
+    """解析 DOCX 文件。
+
+    标题样式（Heading/标题 1-6）转为 Markdown "#" 前缀保留在纯文本中，
+    使层次切分（hierarchical）对 DOCX 也能按真实标题层级工作，而非退化为普通切分。
+    """
     from docx import Document
 
     doc = Document(str(file_path))
     texts = []
     for paragraph in doc.paragraphs:
         if paragraph.text.strip():
-            texts.append(paragraph.text)
+            level = _docx_heading_level(paragraph)
+            if level:
+                texts.append(f"{'#' * level} {paragraph.text.strip()}")
+            else:
+                texts.append(paragraph.text)
 
     # 表格内容
     for table in doc.tables:

@@ -121,19 +121,20 @@ def _sliding_window(text: str, size: int, overlap: int) -> List[str]:
 
 
 def _chunk_by_paragraph(text: str, doc_id: str) -> List[Dict]:
-    """按段落 (`\\n\\n`) 严格切分，无视长度限制"""
+    """按段落 (`\\n\\n`) 严格切分，无视长度限制。
+
+    起始偏移用顺序累积精确计算（split 的每段位置是确定的），不再用 text.find 兜底——
+    重复段落会让 find 命中错误位置，导致逐字证据校验的溯源偏移。
+    """
     paragraphs = text.split("\n\n")
     chunks = []
-    
-    char_pos = 0
+
+    offset = 0  # 当前段落在原文中的起始位置（顺序消费）
     for para in paragraphs:
         cleaned = para.strip()
         if cleaned:
-            # 找到这段在原文本中的真实起始位置 (粗略估算或直接使用当前的 char_pos 滑动)
-            start_pos = text.find(cleaned, char_pos)
-            if start_pos == -1:
-                start_pos = char_pos
-                
+            # strip 只去两端，段内内容连续，起点 = 段落起点 + 前导空白长度
+            start_pos = offset + (len(para) - len(para.lstrip()))
             chunks.append({
                 "id": str(uuid.uuid4()),
                 "doc_id": doc_id,
@@ -142,8 +143,8 @@ def _chunk_by_paragraph(text: str, doc_id: str) -> List[Dict]:
                 "start_char": start_pos,
                 "end_char": start_pos + len(cleaned),
             })
-            char_pos = start_pos + len(cleaned)
-            
+        offset += len(para) + 2  # 补回 split 吃掉的 "\n\n"
+
     return chunks
 
 

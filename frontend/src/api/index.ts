@@ -298,6 +298,8 @@ export interface Run {
 export interface RunEstimate {
   total_chunks: number;
   calls_per_chunk: number;
+  inductive_calls_per_chunk?: number;
+  estimated_inductive_calls?: number;
   estimated_calls: number;
   estimated_input_tokens: number;
   estimated_output_tokens: number;
@@ -435,7 +437,9 @@ export interface ReviewItem {
   title: string;
   entity_type?: string;
   relation_type?: string;
+  abstractness?: 'surface' | 'normalized' | 'inductive';
   confidence: number;
+  support_cases?: number;
   run_id: string;
   change: 'new' | 'changed';
   violations: string[];
@@ -595,6 +599,24 @@ export interface GraphRAGOptions {
   retrieval_mode?: string;
 }
 
+// —— 问图会话隔离：每个浏览器 × 项目一个会话 ID，避免多用户/多标签页共写同一份历史 ——
+const chatSessionKey = (projectId: string) => `kg_chat_session_${projectId}`;
+
+export const getChatSessionId = (projectId: string): string => {
+  let sid = localStorage.getItem(chatSessionKey(projectId));
+  if (!sid) {
+    sid = `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    localStorage.setItem(chatSessionKey(projectId), sid);
+  }
+  return sid;
+};
+
+/** 开启新会话：换一个会话 ID，旧会话历史保留在服务端但不再加载 */
+export const resetChatSession = (projectId: string): string => {
+  localStorage.removeItem(chatSessionKey(projectId));
+  return getChatSessionId(projectId);
+};
+
 export const chatWithGraphStream = async (
   projectId: string,
   query: string,
@@ -604,7 +626,8 @@ export const chatWithGraphStream = async (
   options?: GraphRAGOptions
 ) => {
   try {
-    const body: { query: string; options?: GraphRAGOptions } = { query };
+    const body: { query: string; options?: GraphRAGOptions; session_id?: string } = { query };
+    body.session_id = getChatSessionId(projectId);
     if (options && (options.max_degree != null || options.max_start_entities != null || options.retrieval_mode != null)) {
       body.options = {};
       if (options.max_degree != null) body.options.max_degree = options.max_degree;
@@ -644,9 +667,14 @@ export const chatWithGraphStream = async (
 };
 
 export const getChatHistory = (projectId: string) =>
-  api.get<{ history: { role: string; content: string }[] }>(`/projects/${projectId}/graph-rag/chat`);
+  api.get<{ history: { role: string; content: string }[] }>(
+    `/projects/${projectId}/graph-rag/chat`,
+    { params: { session_id: getChatSessionId(projectId) } },
+  );
 
 export const clearChatHistory = (projectId: string) =>
-  api.delete(`/projects/${projectId}/graph-rag/chat`);
+  api.delete(`/projects/${projectId}/graph-rag/chat`, {
+    params: { session_id: getChatSessionId(projectId) },
+  });
 
 export default api;

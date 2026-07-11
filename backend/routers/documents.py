@@ -37,13 +37,19 @@ def _save_documents(project_id: str, docs: List[Document]):
 
 
 def _invalidate_schema_profile(project_id: str):
-    """项目文档或分片变化时清除缓存的文档背景报告，下次对话配置将基于当前文档重新提炼。"""
-    profile_path = get_project_dir(project_id) / "schema_profile.md"
-    if profile_path.exists():
-        try:
-            profile_path.unlink()
-        except OSError:
-            pass
+    """项目文档或分片变化时清除缓存的文档背景报告，下次对话配置将基于当前文档重新提炼。
+
+    profiling 同时缓存 schema_profile.json（结构化，优先读取）与 schema_profile.md（可读），
+    两者必须一并失效，否则上传/删除文档后仍会命中旧的 .json 缓存。
+    """
+    project_dir = get_project_dir(project_id)
+    for fname in ("schema_profile.json", "schema_profile.md"):
+        p = project_dir / fname
+        if p.exists():
+            try:
+                p.unlink()
+            except OSError:
+                pass
 
 async def _index_chunks_task(project_id: str, doc_id: str, chunks: List[dict]):
     """后台任务：将分片建立向量索引"""
@@ -82,9 +88,72 @@ async def _index_chunks_task(project_id: str, doc_id: str, chunks: List[dict]):
         logger.error(f"后台索引分片失败 ({doc_id}): {e}")
 
 
+def _update_doc_fields(project_id: str, doc_id: str, **fields):
+    """局部更新某个文档记录的字段并持久化（后台解析任务回写状态用）。"""
+    docs = _load_documents(project_id)
+    changed = False
+    for d in docs:
+        if d.id == doc_id:
+            for k, v in fields.items():
+                setattr(d, k, v)
+            changed = True
+            break
+    if changed:
+        _save_documents(project_id, docs)
+
+
+async def _parse_document_task(project_id: str, doc_id: str, file_path_str: str, ext: str,
+                               chunk_method: str, chunk_size: int, chunk_overlap: int,
+                               index_vectors: bool):
+    """后台任务：解析文档 → 分片 → 落库 → （可选）向量索引，全程回写文档状态。
+
+    解析对大文件是 CPU/IO 密集操作，放到后台避免阻塞上传请求与占用请求线程。
+    """
+    from pathlib import Path
+    from services.parser import parse_document
+    from services.chunker import chunk_text
+    from services.chunk_store import save_chunks
+
+    project_dir = get_project_dir(project_id)
+    file_path = Path(file_path_str)
+    try:
+        text = parse_document(file_path, ext)
+
+        text_file = project_dir / "chunks" / f"{doc_id}_raw.txt"
+        text_file.parent.mkdir(exist_ok=True)
+        with open(text_file, "w", encoding="utf-8") as f:
+            f.write(text)
+
+        chunks = chunk_text(
+            text=text,
+            doc_id=doc_id,
+            chunk_method=chunk_method,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
+        chunks_file = project_dir / "chunks" / f"{doc_id}_chunks.json"
+        with open(chunks_file, "w", encoding="utf-8") as f:
+            json.dump(chunks, f, ensure_ascii=False, indent=2)
+        save_chunks(project_id, chunks)
+
+        _update_doc_fields(
+            project_id, doc_id,
+            status="parsed", text_length=len(text), chunk_count=len(chunks),
+        )
+        # 解析产物变化，失效背景报告缓存（须在文本落库之后）
+        _invalidate_schema_profile(project_id)
+
+        if index_vectors:
+            await _index_chunks_task(project_id, doc_id, chunks)
+    except Exception as e:
+        logger.error(f"文档解析失败 ({doc_id}): {e}")
+        _update_doc_fields(project_id, doc_id, status="error", error_message=str(e))
+
+
 @router.post("/{project_id}/documents", response_model=Document)
 async def upload_document(project_id: str, background_tasks: BackgroundTasks, file: UploadFile = File(...)):
-    """上传文档"""
+    """上传文档。文件落盘后立即返回（status=parsing），解析与分片在后台进行，前端轮询状态。"""
     # 检查文件扩展名
     filename = file.filename or "unknown.txt"
     ext = filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
@@ -113,62 +182,35 @@ async def upload_document(project_id: str, background_tasks: BackgroundTasks, fi
     stored_name = f"{doc.id}.{ext}"
     doc.filename = stored_name
 
-    file_path = docs_dir / stored_name
     content = await file.read()
     doc.file_size = len(content)
+
+    # 内容哈希去重：相同内容的重复上传会产生重复片段与重复抽取，污染图谱且浪费 token
+    import hashlib
+    doc.content_hash = hashlib.sha256(content).hexdigest()
+    docs = _load_documents(project_id)
+    dup = next((d for d in docs if d.content_hash and d.content_hash == doc.content_hash), None)
+    if dup:
+        raise HTTPException(
+            status_code=409,
+            detail=f"内容完全相同的文档已存在：{dup.original_filename}。如需重新导入，请先删除原文档。",
+        )
+
+    file_path = docs_dir / stored_name
     with open(file_path, "wb") as f:
         f.write(content)
 
-    # 触发文档解析（异步）
-    from services.parser import parse_document
-    from services.chunker import chunk_text
-
-    try:
-        doc.status = "parsing"
-        text = parse_document(file_path, ext)
-        doc.text_length = len(text)
-
-        # 保存解析后的纯文本
-        text_file = project_dir / "chunks" / f"{doc.id}_raw.txt"
-        text_file.parent.mkdir(exist_ok=True)
-        with open(text_file, "w", encoding="utf-8") as f:
-            f.write(text)
-
-        # 文本分片
-        chunks = chunk_text(
-            text=text,
-            doc_id=doc.id,
-            chunk_method=doc.chunk_method,
-            chunk_size=doc.chunk_size,
-            chunk_overlap=doc.chunk_overlap,
-        )
-        doc.chunk_count = len(chunks)
-
-        # 保存分片数据到 JSON （为了向后兼容）
-        chunks_file = project_dir / "chunks" / f"{doc.id}_chunks.json"
-        with open(chunks_file, "w", encoding="utf-8") as f:
-            json.dump(chunks, f, ensure_ascii=False, indent=2)
-
-        # 同时保存到 SQLite 的 chunk_store
-        from services.chunk_store import save_chunks
-        save_chunks(project_id, chunks)
-
-        # 异步建立向量索引
-        if str(getattr(cfg, "similarity_backend", "keyword")).lower() == "vector":
-            background_tasks.add_task(_index_chunks_task, project_id, doc.id, chunks)
-
-        doc.status = "parsed"
-    except Exception as e:
-        doc.status = "error"
-        doc.error_message = str(e)
-
-    # 保存文档记录
-    docs = _load_documents(project_id)
+    # 记录为「解析中」并立即返回，实际解析在后台执行
+    doc.status = "parsing"
     docs.append(doc)
     _save_documents(project_id, docs)
 
-    # 项目文档有变化，清除已缓存的文档背景报告，下次对话配置将重新提炼
-    _invalidate_schema_profile(project_id)
+    index_vectors = str(getattr(cfg, "similarity_backend", "keyword")).lower() == "vector"
+    background_tasks.add_task(
+        _parse_document_task,
+        project_id, doc.id, str(file_path), ext,
+        doc.chunk_method, doc.chunk_size, doc.chunk_overlap, index_vectors,
+    )
     return doc
 
 

@@ -28,6 +28,13 @@ def build_review_queue(project_id: str, run_id: Optional[str] = None, include_do
     published = load_published_graph(project_id)
     schema = _load_schema_dict(project_id)
 
+    # 实体类型 → 抽象度映射：让复核队列按抽象度分别呈现证据语义与可信度口径
+    # （表面知识看「逐字证据是否命中」，归纳知识看「忠实度校验 + 支撑案例数」）。
+    abstractness_by_type: Dict[str, str] = {}
+    if schema:
+        for et in schema.get("entity_types", []):
+            abstractness_by_type[et.get("name", "")] = et.get("abstractness", "surface") or "surface"
+
     pub_nodes = {n.id: n for n in published.nodes}
     pub_edges = {e.id: e for e in published.edges}
     draft_node_by_id = {n.id: n for n in draft.nodes}
@@ -59,12 +66,17 @@ def build_review_queue(project_id: str, run_id: Optional[str] = None, include_do
         if change == "unchanged":
             continue
         review_state = (node.properties or {}).get("_review", {})
+        abstractness = abstractness_by_type.get(node.entity_type, "surface")
+        # 归纳知识的支撑案例数 = 去重后来源片段数（同一 (类型,名称) 被多个片段归纳出即累加）
+        support_cases = len([c for c in node.source_chunk_ids if c != "cold_start"])
         items.append({
             "kind": "node",
             "id": node.id,
             "title": node.name,
             "entity_type": node.entity_type,
+            "abstractness": abstractness,
             "confidence": node.confidence,
+            "support_cases": support_cases,
             "run_id": node.run_id,
             "change": change,
             "violations": violations_by_id.get(node.id, []),
@@ -90,7 +102,9 @@ def build_review_queue(project_id: str, run_id: Optional[str] = None, include_do
             "id": edge.id,
             "title": f"{s.name if s else '?'} --[{edge.relation_type}]--> {t.name if t else '?'}",
             "relation_type": edge.relation_type,
+            "abstractness": "surface",
             "confidence": edge.confidence,
+            "support_cases": len([c for c in edge.source_chunk_ids if c != "cold_start"]),
             "run_id": edge.run_id,
             "change": "changed" if pub else "new",
             "violations": violations_by_id.get(edge.id, []),

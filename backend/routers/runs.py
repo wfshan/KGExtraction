@@ -113,7 +113,21 @@ async def estimate_run(project_id: str):
     total_chunks = len(_load_all_chunks(project_dir))
     if total_chunks == 0:
         raise HTTPException(status_code=400, detail="没有可处理的文档分片，请先上传并解析文档")
-    return estimate_run_cost(total_chunks, load_config())
+
+    # 归纳类型走额外的归纳+忠实度校验分道（更贵），预估须如实反映
+    has_inductive = False
+    schema_file = project_dir / "schema.json"
+    if schema_file.exists():
+        try:
+            import json as _json
+            with open(schema_file, "r", encoding="utf-8") as f:
+                schema = _json.load(f)
+            has_inductive = any(
+                et.get("abstractness") == "inductive" for et in schema.get("entity_types", [])
+            )
+        except Exception:
+            pass
+    return estimate_run_cost(total_chunks, load_config(), has_inductive_types=has_inductive)
 
 
 @router.post("/{project_id}/runs", response_model=Run)

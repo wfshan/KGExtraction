@@ -7,7 +7,7 @@ from typing import Optional, Dict, Any, List
 from fastapi import APIRouter, HTTPException, UploadFile, File, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
-from models.graph import GraphData, Node, Edge
+from models.graph import GraphData, Node, Edge, make_node_id
 from config import get_project_dir
 from services.graph_store import (
     load_draft_graph,
@@ -26,6 +26,19 @@ from services.graph_store import (
 from services.audit import record_audit, list_audit
 
 router = APIRouter()
+
+
+def _load_schema_config(project_id: str):
+    """加载项目 Schema（不存在时返回 None）。用于导入时校验类型是否在本体内。"""
+    schema_file = get_project_dir(project_id) / "schema.json"
+    if not schema_file.exists():
+        return None
+    try:
+        from models.schema import SchemaConfig
+        with open(schema_file, "r", encoding="utf-8") as f:
+            return SchemaConfig(**json.load(f))
+    except Exception:
+        return None
 
 
 def _actor(request: Request) -> str:
@@ -415,12 +428,22 @@ async def import_graph_data(project_id: str, file: UploadFile = File(...)):
     if not raw_nodes and not raw_edges:
         raise HTTPException(status_code=400, detail="至少需要提供节点或边数据")
 
-    # 3. 加载已有图谱
+    # 3. 加载已有图谱与 Schema
+    # 身份统一为 (entity_type, name) —— 与抽取/写图全程一致，避免同名不同类型被错误合并
     graph = load_draft_graph(project_id)
-    existing_name_map: Dict[str, Node] = {n.name: n for n in graph.nodes}
+    existing_by_id: Dict[str, Node] = {n.id: n for n in graph.nodes}
+
+    schema = _load_schema_config(project_id)
+    schema_entity_types = {et.name for et in schema.entity_types} if schema else set()
+    schema_relation_types = {rt.name for rt in schema.relation_types} if schema else set()
 
     # 4. 处理节点
-    import_stats = {"new_nodes": 0, "merged_nodes": 0, "new_edges": 0, "skipped_edges": 0}
+    import_stats = {
+        "new_nodes": 0, "merged_nodes": 0, "new_edges": 0, "skipped_edges": 0,
+    }
+    out_of_schema_entity_types: Dict[str, int] = {}
+    out_of_schema_relation_types: Dict[str, int] = {}
+    # 边按名称引用节点，name_to_id 供后续解析（同名多类型时以最后出现者为准，属模版格式固有限制）
     name_to_id: Dict[str, str] = {n.name: n.id for n in graph.nodes}
 
     for raw_node in raw_nodes:
@@ -429,16 +452,20 @@ async def import_graph_data(project_id: str, file: UploadFile = File(...)):
         if not name or not entity_type:
             continue
 
-        if name in existing_name_map:
-            # 同名实体合并：更新属性
-            existing = existing_name_map[name]
+        # 记录不在 Schema 中的类型（不拦截导入，但发布门控会过滤——与抽取侧口径一致）
+        if schema_entity_types and entity_type not in schema_entity_types:
+            out_of_schema_entity_types[entity_type] = out_of_schema_entity_types.get(entity_type, 0) + 1
+
+        node_id = make_node_id(entity_type, name)
+        if node_id in existing_by_id:
+            # (类型,名称) 相同才算同一实体：合并属性
+            existing = existing_by_id[node_id]
             if raw_node.get("properties"):
                 existing.properties.update(raw_node["properties"])
             if "cold_start" not in existing.source_chunk_ids:
                 existing.source_chunk_ids.append("cold_start")
             import_stats["merged_nodes"] += 1
         else:
-            # 创建新节点
             node = Node(
                 name=name,
                 entity_type=entity_type,
@@ -447,9 +474,9 @@ async def import_graph_data(project_id: str, file: UploadFile = File(...)):
                 confidence=raw_node.get("confidence", 1.0),
             )
             graph.nodes.append(node)
-            existing_name_map[name] = node
-            name_to_id[name] = node.id
+            existing_by_id[node_id] = node
             import_stats["new_nodes"] += 1
+        name_to_id[name] = node_id
 
     # 确保 name_to_id 包含所有节点
     for n in graph.nodes:
@@ -482,6 +509,9 @@ async def import_graph_data(project_id: str, file: UploadFile = File(...)):
             import_stats["skipped_edges"] += 1
             continue
 
+        if schema_relation_types and relation_type not in schema_relation_types:
+            out_of_schema_relation_types[relation_type] = out_of_schema_relation_types.get(relation_type, 0) + 1
+
         edge = Edge(
             source_id=source_id,
             target_id=target_id,
@@ -503,6 +533,21 @@ async def import_graph_data(project_id: str, file: UploadFile = File(...)):
     except Exception as e:
         import logging
         logging.getLogger(__name__).error(f"导入后同步实体索引失败: {e}")
+
+    # 8. 记入审计：导入是一次进入草稿图的写操作，须与抽取/复核一样可追溯
+    import_stats["out_of_schema_entity_types"] = out_of_schema_entity_types
+    import_stats["out_of_schema_relation_types"] = out_of_schema_relation_types
+    try:
+        record_audit(
+            project_id,
+            actor="import",
+            action="import_graph_data",
+            target_kind="graph",
+            target_id=filename,
+            detail=import_stats,
+        )
+    except Exception:
+        pass
 
     return {
         "message": "图谱数据导入成功",

@@ -13,14 +13,32 @@ logger = logging.getLogger(__name__)
 
 # 定义常量
 MAX_HISTORY_TURNS = 5  # 最多保留 5 轮（即 10 条消息：5次 user + 5次 assistant）
+DEFAULT_SESSION = "default"
 
-def _history_path(project_id: str) -> Path:
-    """获取项目聊天记录文件路径"""
+
+def _sanitize_session_id(session_id: str) -> str:
+    """会话 ID 只允许安全字符，防止路径穿越。"""
+    sid = "".join(c for c in (session_id or DEFAULT_SESSION) if c.isalnum() or c in "-_")[:64]
+    return sid or DEFAULT_SESSION
+
+
+def _history_path(project_id: str, session_id: str = DEFAULT_SESSION) -> Path:
+    """获取会话聊天记录文件路径（按 session 分文件，多会话/多用户互不污染）"""
+    sid = _sanitize_session_id(session_id)
+    return get_project_dir(project_id) / "chat_sessions" / f"{sid}.json"
+
+
+def _legacy_history_path(project_id: str) -> Path:
+    """旧版项目级单文件历史（仅 default 会话读取时兼容）"""
     return get_project_dir(project_id) / "chat_history.json"
 
-def load_history(project_id: str) -> List[Dict[str, str]]:
+
+def load_history(project_id: str, session_id: str = DEFAULT_SESSION) -> List[Dict[str, str]]:
     """加载聊天历史"""
-    path = _history_path(project_id)
+    path = _history_path(project_id, session_id)
+    # 兼容迁移：default 会话且新文件不存在时，回退读旧的项目级单文件
+    if not path.exists() and _sanitize_session_id(session_id) == DEFAULT_SESSION:
+        path = _legacy_history_path(project_id)
     if not path.exists():
         return []
     try:
@@ -30,9 +48,9 @@ def load_history(project_id: str) -> List[Dict[str, str]]:
         logger.error(f"Failed to load chat history for project {project_id}: {e}")
         return []
 
-def save_history(project_id: str, history: List[Dict[str, str]]):
+def save_history(project_id: str, history: List[Dict[str, str]], session_id: str = DEFAULT_SESSION):
     """保存聊天历史"""
-    path = _history_path(project_id)
+    path = _history_path(project_id, session_id)
     try:
         # 确保目录存在
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -41,18 +59,22 @@ def save_history(project_id: str, history: List[Dict[str, str]]):
     except Exception as e:
         logger.error(f"Failed to save chat history for project {project_id}: {e}")
 
-def clear_history(project_id: str):
-    """清空项目聊天历史"""
-    path = _history_path(project_id)
+def clear_history(project_id: str, session_id: str = DEFAULT_SESSION):
+    """清空会话聊天历史（default 会话同时清除旧版单文件）"""
+    path = _history_path(project_id, session_id)
     if path.exists():
         path.unlink()
+    if _sanitize_session_id(session_id) == DEFAULT_SESSION:
+        legacy = _legacy_history_path(project_id)
+        if legacy.exists():
+            legacy.unlink()
 
-async def add_message(project_id: str, role: str, content: str):
+async def add_message(project_id: str, role: str, content: str, session_id: str = DEFAULT_SESSION):
     """
     添加一条新消息到历史记录
     如果历史记录超过阈值，提取最旧的一轮并进行压缩总结
     """
-    history = load_history(project_id)
+    history = load_history(project_id, session_id)
     history.append({"role": role, "content": content})
     
     # 因为是一问一答，一轮=2条记录。MAX_HISTORY_TURNS * 2 为只保留的详细记录条数
@@ -79,12 +101,12 @@ async def add_message(project_id: str, role: str, content: str):
         
         # 重组 history
         history = [{"role": "system", "content": new_summary}] + remaining_msgs
-        
-    save_history(project_id, history)
+
+    save_history(project_id, history, session_id)
 
 async def _compress_turns(current_summary: str, turns_to_compress: List[Dict[str, str]]) -> str:
     """调用 LLM 将旧的对话压缩为简短总结"""
-    messages_text = "\\n".join([f"{msg['role']}: {msg['content']}" for msg in turns_to_compress])
+    messages_text = "\n".join([f"{msg['role']}: {msg['content']}" for msg in turns_to_compress])
     
     prompt = f"""
     请将以下新的对话内容压缩总结，并与之前的历史总结（如果有）合并为一段简短摘要。

@@ -140,6 +140,31 @@ COLORS = [
 ]
 
 
+def _build_relation_types(raw_relations, entity_types, normalize_examples) -> "List[RelationType]":
+    """从 LLM 输出构造关系类型，并保证两端类型落在实体类型集合内。
+
+    越界的一端降级为「不限」（空串）而非丢弃整条关系——这样建议出的 Schema 自洽，
+    也能通过保存时的一致性校验，不会产生永远命不中的悬空关系。
+    """
+    entity_name_set = {et.name for et in entity_types}
+    relation_types: List[RelationType] = []
+    for rt in raw_relations or []:
+        src = rt.get("source_entity_type", "") or ""
+        tgt = rt.get("target_entity_type", "") or ""
+        if src and src not in entity_name_set:
+            src = ""
+        if tgt and tgt not in entity_name_set:
+            tgt = ""
+        relation_types.append(RelationType(
+            name=rt.get("name", ""),
+            definition=rt.get("definition", ""),
+            source_entity_type=src,
+            target_entity_type=tgt,
+            examples=normalize_examples(rt.get("examples", [])),
+        ))
+    return relation_types
+
+
 async def get_or_generate_profile(project_id: str, force: bool = False) -> str:
     """获取或生成全局领域概括（Map-Reduce，见 services/profiling.py）。返回 Markdown。"""
     from services.profiling import map_reduce_profile
@@ -215,16 +240,9 @@ async def generate_schema_suggestion(project_id: str, sample_size: int = 18) -> 
                 structure_template=et.get("structure_template") if ab == "inductive" else None,
             ))
 
-        relation_types = []
-        for rt in result.get("relation_types", []):
-            examples = _normalize_examples(rt.get("examples", []))
-            relation_types.append(RelationType(
-                name=rt.get("name", ""),
-                definition=rt.get("definition", ""),
-                source_entity_type=rt.get("source_entity_type", ""),
-                target_entity_type=rt.get("target_entity_type", ""),
-                examples=examples,
-            ))
+        relation_types = _build_relation_types(
+            result.get("relation_types", []), entity_types, _normalize_examples
+        )
 
         return SchemaConfig(
             entity_types=entity_types,
@@ -377,16 +395,9 @@ async def generate_schema_from_chat(messages: List[dict]) -> SchemaConfig:
                 structure_template=et.get("structure_template") if ab == "inductive" else None,
             ))
 
-        relation_types = []
-        for rt in result.get("relation_types", []):
-            examples = _normalize_examples(rt.get("examples", []))
-            relation_types.append(RelationType(
-                name=rt.get("name", ""),
-                definition=rt.get("definition", ""),
-                source_entity_type=rt.get("source_entity_type", ""),
-                target_entity_type=rt.get("target_entity_type", ""),
-                examples=examples,
-            ))
+        relation_types = _build_relation_types(
+            result.get("relation_types", []), entity_types, _normalize_examples
+        )
 
         return SchemaConfig(
             entity_types=entity_types,

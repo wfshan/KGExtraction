@@ -82,9 +82,35 @@ async def get_schema(project_id: str):
     return _load_schema(project_id)
 
 
+def _validate_schema_consistency(schema: SchemaConfig) -> List[str]:
+    """校验 Schema 一致性：关系两端类型必须是已定义的实体类型（或显式为空=不限）。
+
+    返回违规信息列表；空列表表示通过。支持单类型(str)与多类型(list)约束。
+    """
+    errors: List[str] = []
+    entity_names = {et.name for et in schema.entity_types if et.name}
+
+    def _as_list(v) -> List[str]:
+        if not v:
+            return []
+        return [x for x in (v if isinstance(v, list) else [v]) if x]
+
+    for rt in schema.relation_types:
+        if not rt.name:
+            continue
+        for end, val in (("源", rt.source_entity_type), ("目标", rt.target_entity_type)):
+            for t in _as_list(val):
+                if t not in entity_names:
+                    errors.append(f"关系「{rt.name}」的{end}类型「{t}」不在已定义的实体类型中")
+    return errors
+
+
 @router.put("/{project_id}/schema", response_model=SchemaConfig)
 async def update_schema(project_id: str, schema: SchemaConfig):
-    """更新 Schema 配置"""
+    """更新 Schema 配置。保存前校验关系两端类型必须存在，避免产生永远无法命中的悬空关系。"""
+    errors = _validate_schema_consistency(schema)
+    if errors:
+        raise HTTPException(status_code=422, detail="；".join(errors))
     _save_schema(project_id, schema)
     return schema
 

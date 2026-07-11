@@ -1,9 +1,9 @@
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import Optional
 from services.graph_rag import stream_chat_rag
-from services.chat_store import load_history, clear_history
+from services.chat_store import load_history, clear_history, DEFAULT_SESSION
 import logging
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ class GraphRAGOptions(BaseModel):
 class ChatRequest(BaseModel):
     query: str
     options: Optional[GraphRAGOptions] = None
+    session_id: Optional[str] = Field(default=DEFAULT_SESSION, description="会话标识：多会话/多用户的对话历史相互隔离")
 
 
 @router.post("/{project_id}/graph-rag/chat")
@@ -39,6 +40,7 @@ async def chat_with_graph(project_id: str, req: ChatRequest):
                 max_degree=opts.max_degree,
                 max_start_entities=opts.max_start_entities,
                 retrieval_mode=opts.retrieval_mode,
+                session_id=req.session_id or DEFAULT_SESSION,
             ),
             media_type="text/event-stream",
         )
@@ -47,23 +49,23 @@ async def chat_with_graph(project_id: str, req: ChatRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/{project_id}/graph-rag/chat")
-async def get_chat_history(project_id: str):
+async def get_chat_history(project_id: str, session_id: str = Query(default=DEFAULT_SESSION, description="会话标识")):
     """
-    获取问图多轮对话历史
+    获取问图多轮对话历史（按会话隔离）
     """
     try:
-        return {"history": load_history(project_id)}
+        return {"history": load_history(project_id, session_id)}
     except Exception as e:
         logger.error(f"Failed to load GraphRAG history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.delete("/{project_id}/graph-rag/chat")
-async def delete_chat_history(project_id: str):
+async def delete_chat_history(project_id: str, session_id: str = Query(default=DEFAULT_SESSION, description="会话标识")):
     """
-    清除问图多轮对话历史
+    清除问图多轮对话历史（按会话隔离）
     """
     try:
-        clear_history(project_id)
+        clear_history(project_id, session_id)
         return {"message": "History cleared"}
     except Exception as e:
         logger.error(f"Failed to clear GraphRAG history: {e}")
