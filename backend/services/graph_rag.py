@@ -699,21 +699,25 @@ async def build_context_prompt(
         
     text_context = "暂无原文上下文"
     if text_chunks:
+        # 片段带 [来源#n] 编号：与 recall_info.chunks 的顺序一致，
+        # 前端把回答里的 [来源#n] 渲染为可点击引用锚，点开即原文——溯源链闭环
         texts = [
-            f"- 片段 {c.get('index_num', c.get('index', 0))}:\n  {c.get('content', '')}"
-            for c in text_chunks
+            f"[来源#{i + 1}]:\n  {c.get('content', '')}"
+            for i, c in enumerate(text_chunks)
         ]
         text_context = "\n\n".join(texts)
-        
+
     sys_prompt = f"""
     你是基于知识图谱进行推理与溯源的问答助手。本系统的工作流程是：结合本体结构识别意图 → 在图谱中匹配相应实体/类型并展开子图 → 拉取相关的原文片段。
-    
+
     你当前拥有的上下文包括【图谱关系三元组】（包含实体及其关系属性）和【原文参考片段】。请结合这两者进行高一致性的推理回答。
 
     要求：
     1. 优先使用图谱中的结构化关系进行回答。
     2. 凡有依据处，请结合图谱中的关系与下方原文片段说明。
-    3. 若所给信息不足以回答问题，请直接说明。
+    3. 回答中的关键结论，请紧跟其后标注支撑它的原文编号，格式严格为 [来源#n]（n 为下方原文片段的编号）；
+       仅由图谱关系或常识推断、无原文直接支撑的内容不要标注，避免虚假引用。
+    4. 若所给信息不足以回答问题，请直接说明。
 
     [知识图谱关系三元组上下文]：
     {graph_context}
@@ -753,12 +757,13 @@ async def build_context_prompt(
             {
                 "id": c.get("chunk_id"),
                 "index": c.get("index_num"),
+                "n": i + 1,  # [来源#n] 引用锚编号，与 prompt 内片段编号对齐
                 "text": c.get("content", "")[:120],
             }
-            for c in text_chunks[: mode_profile["max_recall_chunks"]]
+            for i, c in enumerate(text_chunks[: mode_profile["max_recall_chunks"]])
         ],
     }
-    
+
     print(f"[Trace] 上下文构建完毕: {len(nodes_info)} 实体, {len(formatted_edges)} 关系, {len(text_chunks)} 文本片段, 总耗时={time.time()-start_time:.3f}s")
     print(f"[Trace] === GraphRAG 子图扩展结束 ===\n")
     

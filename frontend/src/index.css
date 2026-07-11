@@ -401,6 +401,28 @@ body {
   margin: 6px 0 8px 18px;
 }
 
+/* [来源#n] 引用锚：回答中的可点击溯源芯片 */
+.chat-markdown a.src-anchor {
+  display: inline-block;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.6;
+  background: var(--primary-50);
+  color: var(--primary-500);
+  border: 1px solid var(--primary-200);
+  border-radius: 5px;
+  padding: 0 5px;
+  margin: 0 2px;
+  cursor: pointer;
+  text-decoration: none;
+  vertical-align: 1px;
+}
+
+.chat-markdown a.src-anchor:hover {
+  background: var(--primary-100);
+  color: var(--primary-600);
+}
+
 .chat-markdown code {
   background: rgba(255, 255, 255, 0.08);
   border-radius: 4px;

@@ -6,7 +6,7 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
     Select, Tag, Descriptions, Empty, Space, Button, Checkbox, message, Badge,
     Collapse, Spin, Typography, Drawer, Input, List, Avatar, Popconfirm, Tooltip, InputNumber,
-    AutoComplete, Menu, Alert
+    AutoComplete, Menu, Alert, Modal
 } from 'antd';
 import {
     FullscreenOutlined, FullscreenExitOutlined, ExportOutlined,
@@ -114,6 +114,9 @@ export default function GraphPage() {
     const [communityCount, setCommunityCount] = useState<number>(0);
     const [buildingCommunity, setBuildingCommunity] = useState(false);
     const messagesEndRef = useRef<HTMLDivElement>(null);
+    // 问图命中高亮与 [来源#n] 引用锚
+    const [ragHighlightActive, setRagHighlightActive] = useState(false);
+    const [sourceModal, setSourceModal] = useState<{ n: number; chunkId: string; text: string } | null>(null);
 
     // Exploration State
     const [searchQuery, setSearchQuery] = useState('');
@@ -368,6 +371,28 @@ export default function GraphPage() {
                             'border-width': 2,
                             'border-color': '#fff',
                             'overlay-opacity': 0,
+                            // 暗底辉光：同色 underlay 模拟节点光晕
+                            'underlay-color': 'data(color)',
+                            'underlay-padding': 5,
+                            'underlay-opacity': 0.22,
+                            'underlay-shape': 'ellipse',
+                        } as any,
+                    },
+                    {
+                        // 问图命中高亮：命中子图满亮 + 加强辉光，其余降为背景
+                        selector: '.rag-dim',
+                        style: { opacity: 0.12 },
+                    },
+                    {
+                        selector: 'node.rag-hit',
+                        style: { 'underlay-opacity': 0.5, 'underlay-padding': 10 } as any,
+                    },
+                    {
+                        selector: 'edge.rag-hit',
+                        style: {
+                            'line-color': '#7B93FF',
+                            'target-arrow-color': '#7B93FF',
+                            width: 2.5,
                         },
                     },
                     {
@@ -582,6 +607,7 @@ export default function GraphPage() {
     const handleSendMessage = () => {
         if (!chatInput.trim() || !selectedProject || chatLoading) return;
 
+        clearRagHighlight(); // 新问题开始，清除上一轮命中高亮
         const newMessage: ChatMessage = { role: 'user', content: chatInput };
         setChatMessages((prev) => [...prev, newMessage, { role: 'assistant', content: '' }]);
         setChatInput('');
@@ -602,6 +628,8 @@ export default function GraphPage() {
                 if (last && last.role === 'assistant') last.recallInfo = info;
                 return newMsgs;
             });
+            // 命中子图即时点亮：回答尚在流式生成，图上已能看到本次检索命中了哪里
+            applyRagHighlight(info);
         };
 
         const renderFromBuffer = () => {
@@ -681,13 +709,75 @@ export default function GraphPage() {
         );
     };
 
-    const renderMarkdownContent = (content: string, isAssistant: boolean) => (
-        <div className={`chat-markdown ${isAssistant ? 'assistant' : 'user'}`}>
-            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                {content}
-            </ReactMarkdown>
-        </div>
-    );
+    // ===== 问图命中高亮：命中子图点亮、其余降为背景 =====
+    const applyRagHighlight = (info: RecallInfo) => {
+        const cy = cyRef.current;
+        if (!cy) return;
+        const hitIds = new Set((info.nodes || []).map((n: any) => n.id).filter(Boolean));
+        if (hitIds.size === 0) return;
+        cy.batch(() => {
+            cy.elements().removeClass('rag-hit').removeClass('rag-dim');
+            cy.elements().addClass('rag-dim');
+            const hits = cy.nodes().filter((n) => hitIds.has(n.id()));
+            hits.removeClass('rag-dim').addClass('rag-hit');
+            hits.edgesWith(hits).removeClass('rag-dim').addClass('rag-hit');
+        });
+        setRagHighlightActive(true);
+    };
+
+    const clearRagHighlight = () => {
+        cyRef.current?.elements().removeClass('rag-hit').removeClass('rag-dim');
+        setRagHighlightActive(false);
+    };
+
+    // ===== [来源#n] 引用锚：点击弹出被引用的原文片段全文 =====
+    const openSourceAnchor = async (n: number, recall?: RecallInfo) => {
+        const chunk = (recall?.chunks || []).find((c: any) => (c.n ?? 0) === n)
+            || (recall?.chunks || [])[n - 1];
+        if (!chunk?.id) {
+            message.info('未找到该来源对应的召回片段（可能超出召回展示上限）');
+            return;
+        }
+        try {
+            const res = await getChunksByIds(selectedProject, [chunk.id]);
+            const full = res.data?.[0];
+            setSourceModal({ n, chunkId: chunk.id, text: full?.text || chunk.text || '（原文不可用）' });
+        } catch {
+            setSourceModal({ n, chunkId: chunk.id, text: chunk.text || '（原文加载失败）' });
+        }
+    };
+
+    const renderMarkdownContent = (content: string, isAssistant: boolean, recall?: RecallInfo) => {
+        // [来源#n] 转为可点击引用锚（仅助手消息）
+        const processed = isAssistant
+            ? content.replace(/\[来源#(\d+)\]/g, '[来源#$1](#src-$1)')
+            : content;
+        return (
+            <div className={`chat-markdown ${isAssistant ? 'assistant' : 'user'}`}>
+                <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                        a: ({ href, children }) => {
+                            if (href?.startsWith('#src-')) {
+                                const n = parseInt(href.slice(5), 10);
+                                return (
+                                    <a
+                                        className="src-anchor"
+                                        onClick={(e) => { e.preventDefault(); openSourceAnchor(n, recall); }}
+                                    >
+                                        {children}
+                                    </a>
+                                );
+                            }
+                            return <a href={href} target="_blank" rel="noreferrer">{children}</a>;
+                        },
+                    }}
+                >
+                    {processed}
+                </ReactMarkdown>
+            </div>
+        );
+    };
 
     return (
         <div className="graph-page" style={fullscreen ? { position: 'fixed', inset: 0, zIndex: 1000, height: '100vh' } : {}}>
@@ -787,6 +877,15 @@ export default function GraphPage() {
                     <Badge count={graph?.edges.length || 0} showZero overflowCount={9999}>
                         <Tag>关系</Tag>
                     </Badge>
+                    {ragHighlightActive && (
+                        <Tag
+                            color="geekblue"
+                            style={{ cursor: 'pointer' }}
+                            onClick={clearRagHighlight}
+                        >
+                            问图命中高亮中 · 点击清除
+                        </Tag>
+                    )}
                 </div>
 
                 <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden', border: '1px solid var(--gray-200)', borderRadius: 8, background: 'transparent' }}>
@@ -1057,7 +1156,7 @@ export default function GraphPage() {
                                                         borderRadius: item.role === 'user' ? 0 : '8px',
                                                     }}>
                                                         {item.content
-                                                            ? renderMarkdownContent(item.content, item.role === 'assistant')
+                                                            ? renderMarkdownContent(item.content, item.role === 'assistant', item.recallInfo)
                                                             : (item.role === 'assistant' && chatLoading ? <Spin size="small" /> : '')
                                                         }
                                                     </div>
@@ -1251,6 +1350,30 @@ export default function GraphPage() {
                     </div>
                 </div>
             </Drawer>
+
+            {/* [来源#n] 引用锚 → 原文片段全文（结论 → 三元组 → 原文短句的溯源链终点） */}
+            <Modal
+                title={sourceModal ? `来源#${sourceModal.n} · 原文片段` : ''}
+                open={!!sourceModal}
+                onCancel={() => setSourceModal(null)}
+                footer={[<Button key="close" onClick={() => setSourceModal(null)}>关闭</Button>]}
+                width={560}
+            >
+                {sourceModal && (
+                    <div>
+                        <div style={{ fontSize: 11, fontFamily: 'var(--mono)', color: 'var(--gray-400)', marginBottom: 8 }}>
+                            chunk: {sourceModal.chunkId}
+                        </div>
+                        <div style={{
+                            background: 'var(--gray-100)', border: '1px solid var(--gray-200)',
+                            borderRadius: 8, padding: '12px 14px', fontSize: 13, lineHeight: 1.8,
+                            maxHeight: 380, overflowY: 'auto', whiteSpace: 'pre-wrap',
+                        }}>
+                            {sourceModal.text}
+                        </div>
+                    </div>
+                )}
+            </Modal>
         </div>
     );
 }
