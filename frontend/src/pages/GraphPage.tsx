@@ -27,6 +27,7 @@ import type {
 } from '../api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { useProject } from '../store/project';
 
 interface RecallInfo {
     mode?: string;
@@ -88,8 +89,10 @@ export default function GraphPage() {
     const containerRef = useRef<HTMLDivElement>(null);
     const cyRef = useRef<Core | null>(null);
 
+    // 应用壳的全局项目上下文优先（路由参数用于外部直链场景）
+    const { projectId: ctxProjectId } = useProject();
     const [projects, setProjects] = useState<Project[]>([]);
-    const [selectedProject, setSelectedProject] = useState<string>(routeProjectId || '');
+    const [selectedProject, setSelectedProject] = useState<string>(routeProjectId || ctxProjectId || '');
     const [graph, setGraph] = useState<GraphData | null>(null);
     const [schema, setSchema] = useState<SchemaConfig | null>(null);
     const [selectedElement, setSelectedElement] = useState<any>(null);
@@ -786,7 +789,7 @@ export default function GraphPage() {
                     </Badge>
                 </div>
 
-                <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden', border: '1px solid #d9d9d9', borderRadius: 8, background: '#fcfcfc' }}>
+                <div style={{ width: '100%', height: '100%', position: 'relative', overflow: 'hidden', border: '1px solid var(--gray-200)', borderRadius: 8, background: 'transparent' }}>
                     <div ref={containerRef} style={{ width: '100%', height: '100%' }} />
                     
                     {contextMenu && (
@@ -795,7 +798,7 @@ export default function GraphPage() {
                             left: contextMenu.x, 
                             top: contextMenu.y, 
                             zIndex: 1000,
-                            background: '#fff',
+                            background: 'var(--gray-100)',
                             boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
                             borderRadius: 4,
                             minWidth: 120
@@ -819,7 +822,7 @@ export default function GraphPage() {
                     {(!graph || graph.nodes.length === 0) && (
                         <div style={{
                             position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center',
-                            pointerEvents: 'none', background: 'rgba(255,255,255,0.6)'
+                            pointerEvents: 'none', background: 'rgba(14, 18, 24, 0.6)'
                         }}>
                             <Empty description={
                                 explorationMode
@@ -1049,7 +1052,7 @@ export default function GraphPage() {
                                                         marginTop: 4,
                                                         color: 'var(--text-color)',
                                                         lineHeight: 1.6,
-                                                        background: item.role === 'user' ? 'transparent' : '#f5f5f5',
+                                                        background: item.role === 'user' ? 'transparent' : 'var(--gray-100)',
                                                         padding: item.role === 'user' ? 0 : '12px',
                                                         borderRadius: item.role === 'user' ? 0 : '8px',
                                                     }}>
@@ -1068,7 +1071,7 @@ export default function GraphPage() {
                                                                 } 
                                                                 key="recall"
                                                             >
-                                                                <div style={{ fontSize: 11, color: 'var(--gray-600)', background: '#fafafa', padding: '8px', borderRadius: '4px' }}>
+                                                                <div style={{ fontSize: 11, color: 'var(--gray-600)', background: 'var(--gray-100)', padding: '8px', borderRadius: '4px' }}>
                                                                     {item.recallInfo.nodes.length > 0 && (
                                                                         <div style={{ marginBottom: 4 }}>
                                                                             <b style={{ color: '#1677ff' }}>匹配实体：</b>
@@ -1222,7 +1225,7 @@ export default function GraphPage() {
                         )}
                     </Space>
                 </div>
-                <div style={{ padding: 16, borderTop: '1px solid var(--border-color)', background: '#fff' }}>
+                <div style={{ padding: 16, borderTop: '1px solid var(--gray-200)', background: 'var(--gray-50)' }}>
                     <Input.TextArea
                         value={chatInput}
                         onChange={(e) => setChatInput(e.target.value)}

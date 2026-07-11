@@ -82,7 +82,7 @@ export default function ProjectManager({ selectedProjectId, onSelect, onNext }: 
                         新建项目
                     </Button>
                     <Button type="primary" onClick={onNext} disabled={!selectedProjectId}>
-                        下一步 →
+                        使用此项目
                     </Button>
                 </Space>
             }

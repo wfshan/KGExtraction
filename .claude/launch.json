@@ -1,0 +1,17 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "frontend",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "frontend"],
+      "port": 5173
+    },
+    {
+      "name": "backend",
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "'/Users/wfshan/Desktop/软著/KGExtraction/backend/.venv/bin/python' -m uvicorn main:app --port 8000 --app-dir '/Users/wfshan/Desktop/软著/KGExtraction/backend'"],
+      "port": 8000
+    }
+  ]
+}
