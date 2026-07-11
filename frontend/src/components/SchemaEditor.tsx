@@ -3,7 +3,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import {
-    Card, Button, Input, Space, message, Spin, Empty, Popconfirm, ColorPicker, Drawer, List, Avatar, Typography, Modal, Radio, Select
+    Card, Button, Input, Space, message, Spin, Empty, Popconfirm, ColorPicker, Drawer, List, Avatar, Typography, Modal, Radio, Select, Dropdown
 } from 'antd';
 import {
     PlusOutlined, DeleteOutlined, BulbOutlined, TagOutlined, SwapOutlined, MessageOutlined, RobotOutlined, UserOutlined, SendOutlined,
@@ -36,6 +36,8 @@ interface Props {
     projectId: string;
     onNext: () => void;
     onPrev: () => void;
+    /** Schema 保存 / 智能规划应用后回调（父组件用于刷新抽取计划泳道） */
+    onChanged?: () => void;
 }
 
 const DEFAULT_COLORS = [
@@ -53,7 +55,7 @@ const constraintToArray = (v: string | string[] | undefined): string[] => {
 const arrayToConstraint = (arr: string[]): string | string[] =>
     arr.length <= 1 ? (arr[0] || '') : arr;
 
-export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
+export default function SchemaEditor({ projectId, onNext, onPrev, onChanged }: Props) {
     const [schema, setSchema] = useState<SchemaConfig>({ entity_types: [], relation_types: [] });
     const [loading, setLoading] = useState(false);
     const [suggesting, setSuggesting] = useState(false);
@@ -134,6 +136,7 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
             message.success('抽取计划已应用，类型抽象度已写入 Schema');
             await loadSchema();
             setPlannerOpen(false);
+            onChanged?.();
         } catch (err: any) {
             message.error(err.response?.data?.detail || '应用失败');
         } finally {
@@ -382,12 +385,14 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
     const autoSave = () => {
         saveSchema(schema);
         message.success({ content: '已自动保存', key: 'schema-autosave', duration: 1 });
+        onChanged?.();
     };
 
     // 显式保存按钮：明确反馈
     const handleSave = () => {
         saveSchema(schema);
         message.success('Schema 已保存');
+        onChanged?.();
     };
 
     // ===== Schema 演化 =====
@@ -442,29 +447,42 @@ export default function SchemaEditor({ projectId, onNext, onPrev }: Props) {
             extra={
                 <Space>
                     <Button onClick={onPrev}>← 上一步</Button>
-                    <Button
-                        onClick={() => checkSourcesAndAct('chat')}
-                        icon={<MessageOutlined />}
-                    >
-                        对话配置
-                    </Button>
-                    <Button
-                        onClick={() => checkSourcesAndAct('suggest')}
-                        loading={suggesting}
-                        icon={<BulbOutlined />}
-                    >
-                        智能建议
-                    </Button>
-                    <Tooltip title="根据抽取结果检测 Schema 未覆盖的高频类型，诱导补全并版本化">
-                        <Button onClick={openEvolve} icon={<NodeExpandOutlined />}>
-                            缺口演化
+                    {/* 引导主线：先建议出类型，再规划抽取语义。对话配置/缺口演化收进「高级」，
+                        不与主线并列争夺注意力（缺口演化本就在抽取完成后才有意义） */}
+                    <Tooltip title="第 ① 步：分析文档，AI 建议实体/关系类型（含抽象度标注）">
+                        <Button
+                            onClick={() => checkSourcesAndAct('suggest')}
+                            loading={suggesting}
+                            icon={<BulbOutlined />}
+                        >
+                            ① 智能建议
                         </Button>
                     </Tooltip>
-                    <Tooltip title="让大模型分析类型与文档，自动判断每个类型该走表面抽取还是归纳抽取，规划专用抽取流程">
+                    <Tooltip title="第 ② 步：让大模型判断每个类型该走表面抽取还是归纳抽取，编译专用抽取计划（见下方泳道）">
                         <Button onClick={openPlanner} icon={<ThunderboltOutlined />}>
-                            智能规划
+                            ② 智能规划
                         </Button>
                     </Tooltip>
+                    <Dropdown
+                        menu={{
+                            items: [
+                                {
+                                    key: 'chat',
+                                    icon: <MessageOutlined />,
+                                    label: '对话配置（与 AI 讨论后生成 Schema）',
+                                    onClick: () => checkSourcesAndAct('chat'),
+                                },
+                                {
+                                    key: 'evolve',
+                                    icon: <NodeExpandOutlined />,
+                                    label: '缺口演化（抽取后检测未覆盖类型）',
+                                    onClick: openEvolve,
+                                },
+                            ],
+                        }}
+                    >
+                        <Button icon={<DownOutlined />}>高级</Button>
+                    </Dropdown>
                     <Button onClick={handleSave}>保存</Button>
                     <Button
                         type="primary"

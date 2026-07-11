@@ -9,6 +9,7 @@ import { Result, Tabs } from 'antd';
 import { FolderOpenOutlined, ThunderboltOutlined, SafetyCertificateOutlined } from '@ant-design/icons';
 import DocumentUpload from '../components/DocumentUpload';
 import SchemaEditor from '../components/SchemaEditor';
+import PlanLanes from '../components/PlanLanes';
 import ExtractionRunner from '../components/ExtractionRunner';
 import HumanReview from '../components/HumanReview';
 import { useProject } from '../store/project';
@@ -45,6 +46,8 @@ export function IngestPage() {
 export function OntologyPage() {
     const { projectId } = useProject();
     const navigate = useNavigate();
+    // Schema 保存 / 智能规划应用后递增，驱动下方计划泳道重新拉取
+    const [planRefresh, setPlanRefresh] = useState(0);
     if (!projectId) return <NeedProject hint="项目就绪后，在这里定义本体（Schema）并编译抽取计划。" />;
     return (
         <div className="fade-in">
@@ -56,7 +59,9 @@ export function OntologyPage() {
                 projectId={projectId}
                 onNext={() => navigate('/govern')}
                 onPrev={() => navigate('/ingest')}
+                onChanged={() => setPlanRefresh((v) => v + 1)}
             />
+            <PlanLanes projectId={projectId} refreshSignal={planRefresh} />
         </div>
     );
 }

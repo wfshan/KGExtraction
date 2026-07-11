@@ -422,6 +422,56 @@ body {
   color: inherit;
 }
 
+/* ===== 抽取计划泳道（本体与计划页） ===== */
+.plan-lane {
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius-md);
+  padding: 10px 12px;
+}
+
+.plan-lane-title {
+  font-size: 10.5px;
+  letter-spacing: 0.1em;
+  font-weight: 700;
+  margin-bottom: 8px;
+  color: var(--gray-500);
+}
+
+.plan-lane-inductive { border-color: rgba(180, 145, 245, 0.4); }
+.plan-lane-inductive .plan-lane-title { color: var(--ab-inductive); }
+.plan-lane-inductive .plan-node { border-color: rgba(180, 145, 245, 0.5); }
+
+.plan-lane-surface { border-color: rgba(92, 179, 255, 0.4); }
+.plan-lane-surface .plan-lane-title { color: var(--ab-surface); }
+.plan-lane-surface .plan-node { border-color: rgba(92, 179, 255, 0.5); }
+
+.plan-lane-steps {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  row-gap: 6px;
+  overflow-x: auto;
+}
+
+.plan-node {
+  border: 1px solid var(--gray-300);
+  background: var(--gray-100);
+  border-radius: var(--radius-md);
+  padding: 4px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+  white-space: nowrap;
+  color: var(--gray-800);
+  cursor: default;
+}
+
+.plan-arrow {
+  color: var(--gray-400);
+  padding: 0 8px;
+  font-family: var(--mono);
+  flex: none;
+}
+
 /* ===== 空状态 ===== */
 .empty-state {
   display: flex;
