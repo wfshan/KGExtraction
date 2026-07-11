@@ -5,15 +5,19 @@
 import { useEffect, useState } from 'react';
 import {
     Table, Tag, Space, Button, message, Tooltip, Tabs, Popconfirm, Alert, Typography, Badge,
+    Popover, Select, Timeline,
 } from 'antd';
 import {
     CheckOutlined, CloseOutlined, ReloadOutlined, WarningOutlined,
-    SafetyCertificateOutlined, FileSearchOutlined, HistoryOutlined,
+    SafetyCertificateOutlined, FileSearchOutlined, HistoryOutlined, ToolOutlined,
 } from '@ant-design/icons';
 import {
     getReviewQueue, postReviewDecision, getAuditLog, getRejectedItems,
+    getSchema, updateSchema, updateNode,
 } from '../api';
-import type { ReviewQueue as ReviewQueueData, ReviewItem, AuditLogEntry, RejectedItemsResponse } from '../api';
+import type {
+    ReviewQueue as ReviewQueueData, ReviewItem, AuditLogEntry, RejectedItemsResponse, SchemaConfig,
+} from '../api';
 
 const { Text } = Typography;
 
@@ -31,17 +35,21 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
     const [riskOnly, setRiskOnly] = useState(false);
     const [violationFilter, setViolationFilter] = useState<string | null>(null);
 
+    const [schema, setSchema] = useState<SchemaConfig | null>(null);
+
     const loadAll = async () => {
         setLoading(true);
         try {
-            const [q, a, r] = await Promise.all([
+            const [q, a, r, s] = await Promise.all([
                 getReviewQueue(projectId),
                 getAuditLog(projectId),
                 getRejectedItems(projectId),
+                getSchema(projectId).catch(() => null),
             ]);
             setQueue(q.data);
             setAuditLogs(a.data.logs);
             setRejected(r.data);
+            if (s) setSchema(s.data);
         } catch {
             message.error('加载复核数据失败');
         } finally {
@@ -67,6 +75,40 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
         if (it.violations.length > 0) return true;
         if (it.abstractness === 'inductive') return (it.support_cases ?? 0) < 2;
         return !it.evidence_verified || (it.confidence ?? 1) < 0.8;
+    };
+
+    // 违规项就地修正：改类型（写回草稿节点）/ 把类型加入 Schema，免去跳页往返
+    const fixNodeType = async (item: ReviewItem, newType: string) => {
+        try {
+            await updateNode(projectId, item.id, { entity_type: newType } as any);
+            message.success(`已将「${item.title}」的类型改为「${newType}」`);
+            await loadAll();
+            onChanged?.();
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '修改失败');
+        }
+    };
+
+    const addTypeToSchema = async (typeName: string) => {
+        if (!schema) return;
+        if (schema.entity_types.some((et) => et.name === typeName)) {
+            message.info('该类型已在 Schema 中');
+            return;
+        }
+        try {
+            await updateSchema(projectId, {
+                ...schema,
+                entity_types: [
+                    ...schema.entity_types,
+                    { name: typeName, definition: '', examples: [], color: '#5CB3FF', abstractness: 'surface' as const },
+                ],
+            });
+            message.success(`已把「${typeName}」加入 Schema，该违规将在下次校验时解除`);
+            await loadAll();
+            onChanged?.();
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '加入 Schema 失败');
+        }
     };
 
     const allItems = (queue?.items || []).filter(it => !onlyPending || it.review_status === 'pending');
@@ -160,9 +202,36 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
         {
             title: '裁决',
             key: 'actions',
-            width: 110,
+            width: 140,
             render: (_: any, record: ReviewItem) => (
                 <Space size="small">
+                    {record.kind === 'node' && record.violations.length > 0 && (
+                        <Popover
+                            trigger="click"
+                            title="就地修正"
+                            content={
+                                <Space direction="vertical" size={8} style={{ width: 240 }}>
+                                    <div style={{ fontSize: 12, color: 'var(--gray-500)' }}>改为 Schema 内的类型：</div>
+                                    <Select
+                                        size="small"
+                                        style={{ width: '100%' }}
+                                        placeholder="选择目标类型"
+                                        options={(schema?.entity_types || []).map((et) => ({ label: et.name, value: et.name }))}
+                                        onChange={(v) => fixNodeType(record, v)}
+                                    />
+                                    {record.entity_type && !(schema?.entity_types || []).some((et) => et.name === record.entity_type) && (
+                                        <Button size="small" block onClick={() => addTypeToSchema(record.entity_type!)}>
+                                            把「{record.entity_type}」加入 Schema
+                                        </Button>
+                                    )}
+                                </Space>
+                            }
+                        >
+                            <Tooltip title="就地修正：改类型 / 加入 Schema">
+                                <Button size="small" icon={<ToolOutlined />} />
+                            </Tooltip>
+                        </Popover>
+                    )}
                     {record.violations.length > 0 ? (
                         // 复核通过 ≠ 门控放行：违规项即使人工通过，发布时仍会被确定性门控过滤。
                         // 不给用户"通过了就能发布"的错觉。
@@ -197,18 +266,6 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
         },
     ];
 
-    const auditColumns = [
-        { title: '时间', dataIndex: 'ts', key: 'ts', width: 175, render: (ts: string) => ts?.replace('T', ' ').slice(0, 19) },
-        { title: '操作人', dataIndex: 'actor', key: 'actor', width: 110, render: (a: string) => <Tag>{a}</Tag> },
-        { title: '动作', dataIndex: 'action', key: 'action', width: 130, render: (a: string) => <Tag color="geekblue">{a}</Tag> },
-        {
-            title: '详情',
-            dataIndex: 'detail',
-            key: 'detail',
-            render: (d: Record<string, any>) => <Text type="secondary" style={{ fontSize: 12 }}>{JSON.stringify(d)}</Text>,
-        },
-    ];
-
     const rejectedColumns = [
         { title: '类别', dataIndex: 'kind', key: 'kind', width: 70, render: (k: string) => k === 'entity' ? <Tag color="blue">实体</Tag> : <Tag color="purple">关系</Tag> },
         { title: '名称', dataIndex: 'name', key: 'name', width: 200 },
@@ -219,16 +276,33 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
 
     return (
         <div>
-            {queue && (
-                <Alert
-                    style={{ marginBottom: 12 }}
-                    type={queue.with_violations > 0 ? 'warning' : 'info'}
-                    showIcon
-                    message={
-                        <Space size="large">
-                            <span>待复核增量 <b>{queue.pending}</b> / {queue.total} 项</span>
-                            <span>门控违规 <b style={{ color: '#cf1322' }}>{queue.with_violations}</b></span>
-                            <span>证据未验证 <b style={{ color: '#d46b08' }}>{queue.unverified_evidence}</b></span>
+            {queue && (() => {
+                // 治理指标首屏化：进入复核区第一眼是「哪里需要我」，而非表格
+                const pendingItems = (queue.items || []).filter((it) => it.review_status === 'pending');
+                const inductiveRisk = pendingItems.filter(
+                    (it) => it.abstractness === 'inductive' && (it.support_cases ?? 0) < 2,
+                ).length;
+                const surfaceItems = pendingItems.filter((it) => it.abstractness !== 'inductive');
+                const evidenceRate = surfaceItems.length > 0
+                    ? Math.round((surfaceItems.filter((it) => it.evidence_verified).length / surfaceItems.length) * 100)
+                    : null;
+                return (
+                    <div style={{ marginBottom: 12 }}>
+                        <div className="review-stats">
+                            <div className={`review-stat${queue.with_violations > 0 ? ' hot' : ''}`}>
+                                <b>{queue.with_violations}</b><span>门控违规</span>
+                            </div>
+                            <div className="review-stat">
+                                <b>{queue.pending}</b><span>待复核增量</span>
+                            </div>
+                            <div className={`review-stat${inductiveRisk > 0 ? ' warm' : ''}`}>
+                                <b>{inductiveRisk}</b><span>归纳知识 &lt;2 例支撑</span>
+                            </div>
+                            <div className="review-stat">
+                                <b>{evidenceRate == null ? '—' : `${evidenceRate}%`}</b><span>证据逐字验证率</span>
+                            </div>
+                        </div>
+                        <Space size={8} style={{ marginTop: 8 }}>
                             <Button size="small" icon={<ReloadOutlined />} onClick={loadAll}>刷新</Button>
                             <Button size="small" onClick={() => setOnlyPending(!onlyPending)}>
                                 {onlyPending ? '显示已通过的项' : '隐藏已通过的项'}
@@ -239,9 +313,9 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                                 </Button>
                             </Tooltip>
                         </Space>
-                    }
-                />
-            )}
+                    </div>
+                );
+            })()}
             {Object.keys(violationCounts).length > 0 && (
                 <Space wrap size={4} style={{ marginBottom: 12 }}>
                     <Text type="secondary" style={{ fontSize: 12 }}>按违规原因过滤：</Text>
@@ -273,6 +347,8 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                                 size="small"
                                 loading={loading}
                                 pagination={{ pageSize: 15 }}
+                                // 风险色条：红=门控违规、黄=高风险（证据/支撑案例/低置信度），凭颜色分诊
+                                rowClassName={(r) => r.violations.length > 0 ? 'rq-row-crit' : isHighRisk(r) ? 'rq-row-warn' : ''}
                             />
                         ),
                     },
@@ -310,13 +386,36 @@ export default function ReviewQueue({ projectId, onChanged }: Props) {
                         key: 'audit',
                         label: <span><HistoryOutlined /> 审计日志</span>,
                         children: (
-                            <Table
-                                columns={auditColumns}
-                                dataSource={auditLogs}
-                                rowKey="id"
-                                size="small"
-                                pagination={{ pageSize: 15 }}
-                            />
+                            // 时间线呈现「谁·何时·对什么·做了什么」，演示"全程留痕"只需滚动一屏
+                            auditLogs.length === 0 ? (
+                                <Text type="secondary">暂无审计记录</Text>
+                            ) : (
+                                <Timeline
+                                    style={{ marginTop: 8 }}
+                                    items={auditLogs.map((log) => ({
+                                        key: log.id,
+                                        color: /reject|delete|remove/.test(log.action) ? 'red'
+                                            : /approve|publish/.test(log.action) ? 'green' : 'blue',
+                                        children: (
+                                            <div style={{ fontSize: 12.5 }}>
+                                                <Space size={8} wrap>
+                                                    <Text type="secondary" style={{ fontFamily: 'var(--mono)', fontSize: 11 }}>
+                                                        {log.ts?.replace('T', ' ').slice(0, 19)}
+                                                    </Text>
+                                                    <Tag style={{ fontSize: 11 }}>{log.actor}</Tag>
+                                                    <Tag color="geekblue" style={{ fontSize: 11 }}>{log.action}</Tag>
+                                                    <Text style={{ fontSize: 12 }}>{log.target_kind} · {String(log.target_id).slice(0, 24)}</Text>
+                                                </Space>
+                                                {log.detail && Object.keys(log.detail).length > 0 && (
+                                                    <div style={{ fontSize: 11, color: 'var(--gray-400)', fontFamily: 'var(--mono)', marginTop: 2, wordBreak: 'break-all' }}>
+                                                        {JSON.stringify(log.detail).slice(0, 200)}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ),
+                                    }))}
+                                />
+                            )
                         ),
                     },
                 ]}

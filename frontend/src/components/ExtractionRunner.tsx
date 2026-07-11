@@ -4,7 +4,7 @@
 import { useEffect, useRef, useState } from 'react';
 import {
     Card, Button, Space, message, Tag, Alert, Progress, Popconfirm, Result, Spin,
-    Collapse, Checkbox, Divider, Modal, Descriptions
+    Collapse, Checkbox, Divider, Modal, Descriptions, Tooltip
 } from 'antd';
 import {
     ThunderboltOutlined, SyncOutlined, CheckCircleOutlined,
@@ -494,12 +494,42 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                         </Tag>
                     )}
 
-                    <Progress
-                        percent={Math.round(run.progress)}
-                        status={run.status === 'running' ? 'active' : (run.status as string) === 'failed' ? 'exception' : 'success'}
-                        style={{ maxWidth: 500, margin: '0 auto' }}
-                        strokeWidth={12}
-                    />
+                    {/* 分片点阵：每格 ≈ 一个分片（超 400 片时聚合），一屏读出整体节奏与当前位置 */}
+                    {(() => {
+                        const total = run.stats?.total_chunks || 0;
+                        const processed = run.stats?.processed_chunks || 0;
+                        if (total <= 0) {
+                            return (
+                                <Progress
+                                    percent={Math.round(run.progress)}
+                                    status={run.status === 'running' ? 'active' : (run.status as string) === 'failed' ? 'exception' : 'success'}
+                                    style={{ maxWidth: 500, margin: '0 auto' }}
+                                    strokeWidth={12}
+                                />
+                            );
+                        }
+                        const dotCount = Math.min(total, 400);
+                        const scale = total / dotCount;
+                        const doneDots = Math.floor(processed / scale);
+                        const activeDots = run.status === 'running' && doneDots < dotCount
+                            ? Math.min(Math.max(1, Math.round(5 / scale)), dotCount - doneDots)
+                            : 0;
+                        return (
+                            <div>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', maxWidth: 640, margin: '0 auto 8px', fontSize: 12 }}>
+                                    <span style={{ fontWeight: 600 }}>分片进度</span>
+                                    <span style={{ color: 'var(--gray-400)', fontFamily: 'var(--mono)' }}>
+                                        {processed} / {total}{scale > 1 ? ` · 每格≈${Math.ceil(scale)}片` : ''} · {Math.round(run.progress)}%
+                                    </span>
+                                </div>
+                                <div className="chunk-dots">
+                                    {Array.from({ length: dotCount }, (_, i) => (
+                                        <i key={i} className={i < doneDots ? 'done' : i < doneDots + activeDots ? 'active' : ''} />
+                                    ))}
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     <p style={{ color: 'var(--gray-500)', marginTop: 12 }}>
                         {run.current_step || '处理中...'}
@@ -581,23 +611,30 @@ export default function ExtractionRunner({ projectId, onNext, onPrev }: Props) {
                             ref={logScrollRef}
                             style={{
                                 padding: '0 16px 12px 16px',
-                                fontFamily: '"SFMono-Regular", Consolas, "Liberation Mono", Menlo, Courier, monospace',
-                                fontSize: 13,
-                                lineHeight: 1.6,
+                                fontFamily: 'var(--mono)',
+                                fontSize: 12.5,
+                                lineHeight: 1.7,
                                 maxHeight: logsExpanded ? 500 : '4.8em',
                                 overflowY: 'auto',
                                 transition: 'max-height 0.3s ease-in-out',
-                                color: '#52c41a', // Matrix green typing text
-                                textShadow: '0 0 2px rgba(82, 196, 26, 0.5)',
                                 textAlign: 'left',
                             }}
                         >
                             {logs.length > 0 ? (
-                                logs.map((log, i) => (
-                                    <div key={i} style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap' }}>
-                                        {log}
-                                    </div>
-                                ))
+                                // 日志按语义着色：归纳治理事件=紫（产品灵魂事件天然醒目）、
+                                // 警告/失败=黄红、常规完成=绿、其余=灰
+                                logs.map((log, i) => {
+                                    let color = 'var(--gray-500)';
+                                    if (/归纳|merge_semantic|忠实度/.test(log)) color = 'var(--ab-inductive)';
+                                    else if (/ERROR|失败|异常/.test(log)) color = 'var(--error)';
+                                    else if (/WARNING|⚠|跳过|被拒/.test(log)) color = 'var(--warning)';
+                                    else if (/完成|✓|成功|已保存|写入/.test(log)) color = 'var(--success)';
+                                    return (
+                                        <div key={i} style={{ wordBreak: 'break-word', whiteSpace: 'pre-wrap', color }}>
+                                            {log}
+                                        </div>
+                                    );
+                                })
                             ) : (
                                 <div style={{ color: 'rgba(255,255,255,0.45)' }}>启动数据流...</div>
                             )}
