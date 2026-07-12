@@ -25,10 +25,8 @@ from services.schema_utils import (
     format_constraint,
 )
 from services.evidence import has_verified_evidence
-
-# 与 graph_store 中的保留类型保持一致
-RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "未分类实体", "未知类型"}
-RESERVED_RELATION_TYPES = {"下一段"}
+# 单一来源：保留类型集中定义在 graph_store，避免多处漂移
+from services.graph_store import RESERVED_ENTITY_TYPES, RESERVED_RELATION_TYPES
 
 
 @dataclass

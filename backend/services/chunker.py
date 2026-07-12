@@ -230,6 +230,11 @@ def _chunk_recursive_character(text: str, doc_id: str, chunk_size: int, chunk_ov
     return chunks
 
 
+def _clean_heading(header: str) -> str:
+    """标题行 → 纯标题文本：去掉 markdown # 前缀与两端空白。"""
+    return header.lstrip("#").strip() if header else ""
+
+
 def _chunk_hierarchical(text: str, doc_id: str, target_level: int, file_type: str) -> List[Dict]:
     """
     根据层级结构拆分，并带上上级标题作为上下文。
@@ -342,7 +347,8 @@ def _chunk_hierarchical(text: str, doc_id: str, target_level: int, file_type: st
         if full_text.strip():
             final_results.append({
                 "text": full_text,
-                "parents": []
+                "parents": [],
+                "heading_path": [],
             })
     else:
         # 进行合并
@@ -369,7 +375,14 @@ def _chunk_hierarchical(text: str, doc_id: str, target_level: int, file_type: st
                 
             final_results.append({
                 "text": "\n".join(chunk_lines).strip(),
-                "parents": nodes[start_idx]["parents"]
+                "parents": nodes[start_idx]["parents"],
+                # 完整标题路径 = 祖先标题 + 自身标题（去掉 markdown # 前缀），
+                # 供图谱构建「章节」节点：片段→章节→文档 三级结构
+                "heading_path": [
+                    _clean_heading(h)
+                    for h in nodes[start_idx]["parents"] + [nodes[start_idx]["title"]]
+                    if _clean_heading(h)
+                ],
             })
 
     # 3. 组装返回 Dict
@@ -385,6 +398,7 @@ def _chunk_hierarchical(text: str, doc_id: str, target_level: int, file_type: st
             "index": i,
             "start_char": char_pos,
             "end_char": char_pos + len(res["text"]),
+            "heading_path": res.get("heading_path", []),
             "metadata": {"parents": res["parents"]}
         })
         char_pos += len(res["text"])

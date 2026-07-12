@@ -18,13 +18,13 @@ from typing import Dict, List, Optional
 
 from config import get_project_dir
 from models.schema import SchemaConfig, EntityType, RelationType
-from services.graph_store import load_draft_graph, _load_schema_dict
+from services.graph_store import (
+    load_draft_graph, _load_schema_dict,
+    RESERVED_ENTITY_TYPES, RESERVED_RELATION_TYPES,
+)
 from services.llm_gateway import llm_gateway, COMPLEXITY_NORMAL
 
 logger = logging.getLogger(__name__)
-
-RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "未分类实体", "未知类型"}
-RESERVED_RELATION_TYPES = {"下一段"}
 
 COLORS = [
     "#4A90D9", "#50C878", "#FF6B6B", "#FFD93D",

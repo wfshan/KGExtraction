@@ -19,14 +19,19 @@ _nx_cache: Dict[tuple, nx.DiGraph] = {}
 # 系统保留的实体/关系类型（不要求出现在用户 Schema 中）
 # - 未归类片段：未抽取出任何本体实体的文本片段的保底挂载节点
 # - 文档片段：每个片段的“顺序锚点”，用于连接 下一段 关系
-RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "未分类实体", "未知类型"}
-RESERVED_RELATION_TYPES = {"下一段"}
+# - 文档 / 章节：语料的物理组织节点（文档→章节→片段 三级树）
+RESERVED_ENTITY_TYPES = {"未归类片段", "文档片段", "文档", "章节", "未分类实体", "未知类型"}
+RESERVED_RELATION_TYPES = {"下一段", "下一节", "属于文档", "属于章节", "提及于", "共现"}
 
-# 文档结构层（语料层）类型：属于文本物理结构而非领域知识。
-# 图算法（子图扩展 / PPR / 社区检测）默认只在知识层上运行，
-# 避免语义无关的实体经由「下一段」链条连通、污染多跳推理。
-DOC_LAYER_ENTITY_TYPES = {"未归类片段", "文档片段"}
-DOC_LAYER_RELATION_TYPES = {"下一段"}
+# 三层图模型：
+# - 知识层：Schema 定义的实体与关系（图算法与问答 prompt 的默认范围）
+# - 结构层：文档/章节/片段锚点 + 下一段/下一节/属于 边（文本物理结构）
+# - 桥接层：提及于（实体→片段锚点，把知识锚到语料）、共现（同片段共现兜底）
+#   桥接边供图遍历（如 HippoRAG 式二部图 PPR）使用，不进入问答 prompt，
+#   避免语义无关的实体经由结构链条连通、污染多跳推理。
+DOC_LAYER_ENTITY_TYPES = {"未归类片段", "文档片段", "文档", "章节"}
+DOC_LAYER_RELATION_TYPES = {"下一段", "下一节", "属于文档", "属于章节"}
+BRIDGE_RELATION_TYPES = {"提及于", "共现"}
 
 
 def is_doc_layer_node(entity_type: str) -> bool:
@@ -37,21 +42,31 @@ def is_doc_layer_edge(relation_type: str) -> bool:
     return relation_type in DOC_LAYER_RELATION_TYPES
 
 
-def get_nx_graph(project_id: str, include_document_layer: bool = False) -> nx.DiGraph:
+def is_bridge_edge(relation_type: str) -> bool:
+    return relation_type in BRIDGE_RELATION_TYPES
+
+
+def get_nx_graph(
+    project_id: str,
+    include_document_layer: bool = False,
+    include_bridge: bool = False,
+) -> nx.DiGraph:
     """获取 networkx 格式的已发布图结构（带缓存）。
 
-    默认只包含知识层；include_document_layer=True 时包含文档结构层
-    （片段锚点节点与「下一段」边），仅供可视化/结构检索使用。
+    默认只包含知识层；include_document_layer=True 加入结构层
+    （文档/章节/片段锚点与结构边）；include_bridge=True 加入桥接边
+    （提及于/共现）——提及边以片段锚点为端点，故同时纳入结构层节点。
     """
-    cache_key = (project_id, include_document_layer)
+    cache_key = (project_id, include_document_layer, include_bridge)
     if cache_key in _nx_cache:
         return _nx_cache[cache_key]
 
     graph_data = load_published_graph(project_id)
+    include_doc_nodes = include_document_layer or include_bridge
 
     G = nx.DiGraph()
     for node in graph_data.nodes:
-        if not include_document_layer and is_doc_layer_node(node.entity_type):
+        if not include_doc_nodes and is_doc_layer_node(node.entity_type):
             continue
         G.add_node(
             node.id,
@@ -64,6 +79,8 @@ def get_nx_graph(project_id: str, include_document_layer: bool = False) -> nx.Di
 
     for edge in graph_data.edges:
         if not include_document_layer and is_doc_layer_edge(edge.relation_type):
+            continue
+        if not include_bridge and is_bridge_edge(edge.relation_type):
             continue
         if edge.source_id not in G.nodes or edge.target_id not in G.nodes:
             continue

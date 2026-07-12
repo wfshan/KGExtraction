@@ -53,6 +53,15 @@ FALLBACK_ENTITY_TYPE = "未归类片段"
 # 文档结构：每个片段一个锚点节点，用该关系表示“下一段”（文档结构层）
 SEGMENT_ENTITY_TYPE = "文档片段"
 NEXT_SEGMENT_RELATION = "下一段"
+# 结构层：文档→章节→片段 三级树
+DOCUMENT_ENTITY_TYPE = "文档"
+SECTION_ENTITY_TYPE = "章节"
+BELONGS_TO_DOC_RELATION = "属于文档"
+BELONGS_TO_SECTION_RELATION = "属于章节"
+NEXT_SECTION_RELATION = "下一节"
+# 桥接层：把知识锚到语料
+MENTIONED_IN_RELATION = "提及于"
+COOCCUR_RELATION = "共现"
 
 
 def _register_node(entity_map: Dict[tuple, Node], name_index: Dict[str, List[Node]], node: Node):
@@ -815,59 +824,211 @@ async def _add_document_structure(
     run_id: str = "",
 ):
     """
-    固化文档结构到图谱（文档结构层）：为每个片段建立顺序锚点（非保底片段用「文档片段」节点），
-    并添加「下一段」边。该层与知识层分离，仅用于可视化与结构溯源，不参与图算法。
+    固化文档结构到图谱（结构层 + 桥接层）：
+
+    结构层（文档→章节→片段 三级树 + 顺序链）：
+    - 每个文档一个「文档」节点，每个片段一个顺序锚点（保底片段复用其节点）；
+    - 「下一段」边串起片段顺序；heading_path 存在时建「章节」节点，
+      片段—[属于章节]→章节—[属于文档]→文档，章节间「下一节」，多级标题成父子链。
+
+    桥接层（把知识锚到语料，孤立实体的解药）：
+    - 提及边：实体—[提及于]→片段锚点，把节点上的 source_chunk_ids 字段物化为边——
+      概念的跨文档分布、"X 在哪些文档被讨论"由此成为可遍历路径（HippoRAG 式二部图）；
+    - 共现兜底边：同片段共现、但 Schema 关系未覆盖的实体对加低权「共现」边，
+      仅供图遍历桥接（不进问答 prompt），防止 Schema 覆盖不足时关联整体丢失。
+
+    全部为确定性操作，零 LLM 成本；边 ID 确定性派生，重复运行幂等。
     """
+    import hashlib
+
     by_doc: Dict[str, List[Dict]] = defaultdict(list)
     for c in all_chunks:
         by_doc[c["doc_id"]].append(c)
     for doc_id in by_doc:
         by_doc[doc_id].sort(key=lambda c: c.get("index", 0))
 
-    segment_nodes: List[Node] = []
-    edges_next: List[Edge] = []
+    # 文档名映射（documents.json）
+    doc_names: Dict[str, str] = {}
+    docs_file = get_project_dir(project_id) / "documents.json"
+    if docs_file.exists():
+        try:
+            with open(docs_file, "r", encoding="utf-8") as f:
+                for d in json.load(f):
+                    doc_names[d.get("id", "")] = d.get("original_filename") or d.get("filename", "")
+        except Exception:
+            pass
+
+    nodes_out: List[Node] = []
+    edges_out: List[Edge] = []
+    anchor_by_chunk: Dict[str, str] = {}  # chunk_id → 锚点节点 id（提及边的落点）
+
+    def _sec_id(doc_id: str, path: tuple) -> str:
+        digest = hashlib.sha1(f"{doc_id}␟{'␟'.join(path)}".encode("utf-8")).hexdigest()
+        return f"sec_{digest[:24]}"
 
     for doc_id, chunks in by_doc.items():
-        if len(chunks) <= 1:
-            continue
+        # 1) 文档节点
+        doc_node_id = f"doc_{doc_id[:24]}"
+        nodes_out.append(Node(
+            id=doc_node_id,
+            name=doc_names.get(doc_id) or f"文档-{doc_id[:8]}",
+            entity_type=DOCUMENT_ENTITY_TYPE,
+            properties={"doc_id": doc_id, "chunk_count": len(chunks)},
+            source_chunk_ids=[],
+            confidence=1.0,
+            run_id=run_id,
+        ))
+
+        # 2) 片段锚点 + 下一段
         segment_ids: List[str] = []
         for i, chunk in enumerate(chunks):
             chunk_id = chunk["id"]
             if chunk_id in orphan_chunk_ids:
-                segment_id = chunk_id
+                segment_id = chunk_id  # 保底「未归类片段」节点兼任锚点
             else:
                 segment_id = chunk_id + "_seg"
-                segment_nodes.append(
-                    Node(
-                        id=segment_id,
-                        name=f"片段-{doc_id[:8]}-{chunk.get('index', i)}",
-                        entity_type=SEGMENT_ENTITY_TYPE,
-                        properties={"doc_id": doc_id, "index": chunk.get("index", i)},
-                        source_chunk_ids=[chunk_id],
-                        confidence=1.0,
-                        run_id=run_id,
-                    )
-                )
-            segment_ids.append(segment_id)
-        for i in range(len(segment_ids) - 1):
-            edges_next.append(
-                Edge(
-                    source_id=segment_ids[i],
-                    target_id=segment_ids[i + 1],
-                    relation_type=NEXT_SEGMENT_RELATION,
-                    properties={},
-                    source_chunk_ids=[],
+                nodes_out.append(Node(
+                    id=segment_id,
+                    name=f"片段-{doc_id[:8]}-{chunk.get('index', i)}",
+                    entity_type=SEGMENT_ENTITY_TYPE,
+                    properties={"doc_id": doc_id, "index": chunk.get("index", i)},
+                    source_chunk_ids=[chunk_id],
                     confidence=1.0,
                     run_id=run_id,
-                )
-            )
+                ))
+            segment_ids.append(segment_id)
+            anchor_by_chunk[chunk_id] = segment_id
+        for i in range(len(segment_ids) - 1):
+            edges_out.append(Edge(
+                source_id=segment_ids[i], target_id=segment_ids[i + 1],
+                relation_type=NEXT_SEGMENT_RELATION,
+                properties={}, source_chunk_ids=[], confidence=1.0, run_id=run_id,
+            ))
 
-    if segment_nodes:
-        await add_nodes_to_draft(project_id, segment_nodes)
-        log_extraction(f"[文档结构] 已添加 {len(segment_nodes)} 个文档片段锚点节点")
-    if edges_next:
-        await add_edges_to_draft(project_id, edges_next)
-        log_extraction(f"[文档结构] 已添加 {len(edges_next)} 条「下一段」边")
+        # 3) 章节层（heading_path 由层次切分保留；无标题信息的片段直挂文档）
+        section_ids_seen: Dict[str, bool] = {}
+        prev_section_id: str = ""
+        for i, chunk in enumerate(chunks):
+            heading_path = tuple(chunk.get("heading_path") or [])
+            seg_id = segment_ids[i]
+            if not heading_path:
+                edges_out.append(Edge(
+                    source_id=seg_id, target_id=doc_node_id,
+                    relation_type=BELONGS_TO_DOC_RELATION,
+                    properties={}, source_chunk_ids=[], confidence=1.0, run_id=run_id,
+                ))
+                continue
+            # 逐级建章节节点与父子链（幂等：确定性 id，重复 append 由 upsert 合并）
+            parent_id = doc_node_id
+            for depth in range(1, len(heading_path) + 1):
+                path = heading_path[:depth]
+                sec_id = _sec_id(doc_id, path)
+                if sec_id not in section_ids_seen:
+                    section_ids_seen[sec_id] = True
+                    nodes_out.append(Node(
+                        id=sec_id,
+                        name=path[-1][:60],
+                        entity_type=SECTION_ENTITY_TYPE,
+                        properties={"doc_id": doc_id, "heading_path": list(path)},
+                        source_chunk_ids=[],
+                        confidence=1.0,
+                        run_id=run_id,
+                    ))
+                    edges_out.append(Edge(
+                        source_id=sec_id, target_id=parent_id,
+                        relation_type=BELONGS_TO_DOC_RELATION if parent_id == doc_node_id else BELONGS_TO_SECTION_RELATION,
+                        properties={}, source_chunk_ids=[], confidence=1.0, run_id=run_id,
+                    ))
+                parent_id = sec_id
+            leaf_sec_id = parent_id
+            edges_out.append(Edge(
+                source_id=seg_id, target_id=leaf_sec_id,
+                relation_type=BELONGS_TO_SECTION_RELATION,
+                properties={}, source_chunk_ids=[], confidence=1.0, run_id=run_id,
+            ))
+            if prev_section_id and prev_section_id != leaf_sec_id:
+                edges_out.append(Edge(
+                    source_id=prev_section_id, target_id=leaf_sec_id,
+                    relation_type=NEXT_SECTION_RELATION,
+                    properties={}, source_chunk_ids=[], confidence=1.0, run_id=run_id,
+                ))
+            prev_section_id = leaf_sec_id
+
+    if nodes_out:
+        await add_nodes_to_draft(project_id, nodes_out)
+    if edges_out:
+        await add_edges_to_draft(project_id, edges_out)
+    log_extraction(
+        f"[文档结构] 结构层就绪：{len(by_doc)} 文档，{len(anchor_by_chunk)} 片段锚点，"
+        f"{sum(1 for n in nodes_out if n.entity_type == SECTION_ENTITY_TYPE)} 章节"
+    )
+
+    # ===== 桥接层：提及边 + 共现兜底边 =====
+    await _add_bridge_layer(project_id, anchor_by_chunk, add_edges_to_draft, run_id)
+
+
+async def _add_bridge_layer(
+    project_id: str,
+    anchor_by_chunk: Dict[str, str],
+    add_edges_to_draft: Callable,
+    run_id: str = "",
+):
+    """物化桥接层：实体→片段锚点「提及于」边 + 同片段「共现」兜底边。"""
+    from services.graph_store import load_draft_graph, is_doc_layer_node, is_bridge_edge
+
+    graph = load_draft_graph(project_id)
+    knowledge_nodes = [n for n in graph.nodes if not is_doc_layer_node(n.entity_type)]
+
+    # 1) 提及边：source_chunk_ids 字段 → 可遍历的边
+    mention_edges: List[Edge] = []
+    entities_by_chunk: Dict[str, List[str]] = defaultdict(list)
+    for node in knowledge_nodes:
+        for chunk_id in node.source_chunk_ids:
+            anchor_id = anchor_by_chunk.get(chunk_id)
+            if not anchor_id or anchor_id == node.id:
+                continue
+            mention_edges.append(Edge(
+                source_id=node.id, target_id=anchor_id,
+                relation_type=MENTIONED_IN_RELATION,
+                properties={}, source_chunk_ids=[chunk_id], confidence=1.0, run_id=run_id,
+            ))
+            entities_by_chunk[chunk_id].append(node.id)
+    if mention_edges:
+        await add_edges_to_draft(project_id, mention_edges)
+        log_extraction(f"[桥接层] 已物化 {len(mention_edges)} 条「提及于」边（实体→片段锚点）")
+
+    # 2) 共现兜底边：同片段共现、知识层无任何直连关系的实体对。
+    #    仅在实体数 ≤ 上限的片段内建边（密集片段通常已有丰富关系，全连接徒增噪声）。
+    COOCCUR_MAX_ENTITIES_PER_CHUNK = 10
+    existing_pairs: Set[tuple] = set()
+    for e in graph.edges:
+        if not is_bridge_edge(e.relation_type):
+            existing_pairs.add((e.source_id, e.target_id))
+            existing_pairs.add((e.target_id, e.source_id))
+
+    cooccur_edges: List[Edge] = []
+    seen_cooccur: Set[tuple] = set()
+    for chunk_id, entity_ids in entities_by_chunk.items():
+        uniq = sorted(set(entity_ids))
+        if len(uniq) < 2 or len(uniq) > COOCCUR_MAX_ENTITIES_PER_CHUNK:
+            continue
+        for i in range(len(uniq)):
+            for j in range(i + 1, len(uniq)):
+                pair = (uniq[i], uniq[j])
+                if pair in existing_pairs or pair in seen_cooccur:
+                    continue
+                seen_cooccur.add(pair)
+                cooccur_edges.append(Edge(
+                    source_id=pair[0], target_id=pair[1],
+                    relation_type=COOCCUR_RELATION,
+                    properties={"basis": "same_chunk"},
+                    source_chunk_ids=[chunk_id],
+                    confidence=0.3,
+                    run_id=run_id,
+                ))
+    if cooccur_edges:
+        await add_edges_to_draft(project_id, cooccur_edges)
+        log_extraction(f"[桥接层] 已添加 {len(cooccur_edges)} 条「共现」兜底边（低权，仅供遍历）")
 
 
 def _load_all_chunks(project_dir: Path) -> List[Dict]:

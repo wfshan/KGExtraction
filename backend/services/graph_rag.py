@@ -405,8 +405,14 @@ def _hippo_retrieve(
     seed_node_ids: List[str],
     mode_profile: Dict[str, int],
 ) -> Tuple[List[Dict], List[str], List[str]]:
-    """HippoRAG 式关联检索：以种子实体做 Personalized PageRank，
-    取高激活节点构成关联子图，汇聚其原文片段。"""
+    """HippoRAG 式关联检索：以种子实体做 Personalized PageRank。
+
+    传入含桥接层的图时即为 entity-passage 二部图 PPR：质量沿
+    「实体→(提及于)→片段锚点→(被共提及的)实体」传播。高激活的
+    片段锚点直接贡献原文片段（这正是 HippoRAG 的核心收益）；
+    锚点不作为"实体"进入召回列表，桥接/结构边不进入 prompt 三元组。"""
+    from services.graph_store import is_doc_layer_node, is_bridge_edge, is_doc_layer_edge
+
     if not G or not seed_node_ids:
         return [], [], []
 
@@ -423,33 +429,46 @@ def _hippo_retrieve(
 
     top_n = int(mode_profile.get("ppr_top_nodes", 30))
     ranked_nodes = sorted(ppr.items(), key=lambda x: x[1], reverse=True)
-    # 保证种子始终入选
-    selected = set(valid_seeds)
+    # 分开选取：知识实体与片段锚点各按激活度取 top_n（锚点=高相关段落）
+    selected_entities = set(valid_seeds)
+    selected_anchors = set()
     for node_id, _score in ranked_nodes:
-        if len(selected) >= top_n:
+        etype = G.nodes[node_id].get("entity_type", "")
+        if is_doc_layer_node(etype):
+            if len(selected_anchors) < top_n:
+                selected_anchors.add(node_id)
+        elif len(selected_entities) < top_n:
+            selected_entities.add(node_id)
+        if len(selected_entities) >= top_n and len(selected_anchors) >= top_n:
             break
-        selected.add(node_id)
 
     nodes_info = []
     chunk_ids_set = set()
-    for n in selected:
+    for n in selected_entities:
         d = G.nodes.get(n, {})
         nodes_info.append({"id": n, "name": d.get("name"), "type": d.get("entity_type"), "score": round(ppr.get(n, 0.0), 5)})
         for c in d.get("source_chunk_ids", []):
             chunk_ids_set.add(c)
+    # 高激活片段锚点直接贡献原文片段
+    for n in selected_anchors:
+        for c in G.nodes.get(n, {}).get("source_chunk_ids", []):
+            chunk_ids_set.add(c)
 
-    # 收集所选节点间的边
+    # 收集所选实体间的边（桥接边/结构边只用于传播，不进 prompt）
     formatted_edges = []
-    sub_G = G.subgraph(selected)
+    sub_G = G.subgraph(selected_entities)
     for u, v, data in sub_G.edges(data=True):
+        rt = data.get('relation_type', '')
+        if is_bridge_edge(rt) or is_doc_layer_edge(rt):
+            continue
         s_name = G.nodes[u].get("name", "Unknown")
         t_name = G.nodes[v].get("name", "Unknown")
-        formatted_edges.append(f"[{s_name}] --({data.get('relation_type', '')})--> [{t_name}]")
+        formatted_edges.append(f"[{s_name}] --({rt})--> [{t_name}]")
         for c in data.get("source_chunk_ids", []):
             chunk_ids_set.add(c)
     formatted_edges = list(set(formatted_edges))
 
-    print(f"[Trace] HippoRAG PPR: 种子={len(valid_seeds)}, 激活节点={len(nodes_info)}, 边={len(formatted_edges)}")
+    print(f"[Trace] HippoRAG PPR: 种子={len(valid_seeds)}, 激活实体={len(nodes_info)}, 激活片段锚点={len(selected_anchors)}, 边={len(formatted_edges)}")
     return nodes_info, formatted_edges, list(chunk_ids_set)
 
 
@@ -624,9 +643,12 @@ async def build_context_prompt(
         if matched_ids:
             G = get_nx_graph(project_id)
             if retrieval_mode == "hippo":
-                # HippoRAG 思路：以命中实体为种子做 Personalized PageRank 关联检索
+                # HippoRAG 思路：在「知识层 + 桥接层」二部图上做 Personalized PageRank。
+                # 提及边把实体与片段锚点连成 entity-passage 二部图，PPR 质量沿
+                # 「实体→片段→共提及实体」传播，跨文档多跳关联无需显式 Schema 关系
+                G_bridge = get_nx_graph(project_id, include_bridge=True)
                 nodes_info, formatted_edges, all_chunk_ids = _hippo_retrieve(
-                    G, matched_ids, mode_profile
+                    G_bridge, matched_ids, mode_profile
                 )
             elif retrieval_mode == "graph_path" and len(matched_ids) > 1:
                 # 简单路径查找实现

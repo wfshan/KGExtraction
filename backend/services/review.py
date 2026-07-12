@@ -15,6 +15,7 @@ from services.graph_store import (
     _load_schema_dict,
     is_doc_layer_node,
     is_doc_layer_edge,
+    is_bridge_edge,
 )
 from services.evidence import has_verified_evidence
 from services.audit import record_audit
@@ -88,6 +89,9 @@ def build_review_queue(project_id: str, run_id: Optional[str] = None, include_do
 
     for edge in draft.edges:
         if not include_doc_layer and is_doc_layer_edge(edge.relation_type):
+            continue
+        # 桥接边（提及于/共现）是确定性物化的副产物，不是 LLM 主张，不进复核队列
+        if is_bridge_edge(edge.relation_type):
             continue
         if run_id and edge.run_id != run_id:
             continue

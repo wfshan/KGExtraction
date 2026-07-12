@@ -22,6 +22,7 @@ from services.graph_store import (
     get_publish_validation_report,
     is_doc_layer_node,
     is_doc_layer_edge,
+    is_bridge_edge,
 )
 from services.audit import record_audit, list_audit
 
@@ -70,11 +71,13 @@ async def get_graph(project_id: str, status: str = "draft", include_doc_layer: b
     else:
         graph = load_draft_graph(project_id)
     if not include_doc_layer:
+        # 桥接边（提及于/共现）跟随结构层开关：默认视图只看知识层，避免共现兜底边淹没语义关系
         graph.nodes = [n for n in graph.nodes if not is_doc_layer_node(n.entity_type)]
         kept_ids = {n.id for n in graph.nodes}
         graph.edges = [
             e for e in graph.edges
-            if not is_doc_layer_edge(e.relation_type) and e.source_id in kept_ids and e.target_id in kept_ids
+            if not is_doc_layer_edge(e.relation_type) and not is_bridge_edge(e.relation_type)
+            and e.source_id in kept_ids and e.target_id in kept_ids
         ]
     return graph.model_dump()
 
