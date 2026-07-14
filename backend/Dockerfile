@@ -14,10 +14,12 @@ RUN sed -i "s/deb.debian.org/mirrors.aliyun.com/g" /etc/apt/sources.list.d/debia
 # 复制依赖文件
 COPY requirements.txt .
 
-# 优化：显式安装 CPU 版的 Torch 以节省巨大磁盘空间 (约 2GB)
-# 并使用国内镜像加速
-# Cache bust: 2026-03-25T11:00
-RUN pip install --no-cache-dir --default-timeout=1000 torch --index-url https://download.pytorch.org/whl/cpu && \
+# 优化：显式安装 CPU 版的 Torch 以节省巨大磁盘空间 (约 2GB)。
+# torch 从阿里云 pytorch-wheels 镜像直装（pytorch 官方源在国内服务器上
+# 经常 stall 数十分钟）；固定 wheel 与基础镜像 python:3.11-slim/x86_64 对应，
+# 升级基础镜像时需同步更新此 URL。
+RUN pip install --no-cache-dir --default-timeout=1000 -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+        "torch @ https://mirrors.aliyun.com/pytorch-wheels/cpu/torch-2.13.0%2Bcpu-cp311-cp311-manylinux_2_28_x86_64.whl" && \
     pip install --no-cache-dir --default-timeout=1000 -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
 # 复制源码
