@@ -389,8 +389,15 @@ export interface GraphData {
   updated_at: string;
 }
 
-export const getGraph = (projectId: string, status = 'draft', includeDocLayer = true) =>
-  api.get<GraphData>(`/projects/${projectId}/graph`, { params: { status, include_doc_layer: includeDocLayer } });
+export const getGraph = (projectId: string, status = 'draft', includeDocLayer = true, includeCooccur = true) =>
+  api.get<GraphData>(`/projects/${projectId}/graph`, {
+    params: { status, include_doc_layer: includeDocLayer, include_cooccur: includeCooccur },
+  });
+
+/** 为旧版本抽取的图谱回填结构层与桥接层（确定性、幂等，写入草稿图） */
+export const structureBackfill = (projectId: string) =>
+  api.post<{ message: string; stats: Record<string, number> }>(
+    `/projects/${projectId}/graph/structure-backfill`, {}, { timeout: 120000 });
 export const getProjectSubgraph = (projectId: string, nodeIds: string, depth = 1, status = 'published', direction = 'both') =>
   api.get<GraphData>(`/projects/${projectId}/graph/subgraph`, { params: { node_ids: nodeIds, depth, status, direction } });
 export const searchEntities = (projectId: string, query: string, status = 'published') =>

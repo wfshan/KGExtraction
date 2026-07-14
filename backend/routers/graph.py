@@ -64,22 +64,81 @@ class EdgeUpdateRequest(BaseModel):
 
 
 @router.get("/{project_id}/graph")
-async def get_graph(project_id: str, status: str = "draft", include_doc_layer: bool = True):
-    """获取图谱数据。include_doc_layer=false 时过滤文档结构层（片段锚点/「下一段」边）。"""
+async def get_graph(
+    project_id: str,
+    status: str = "draft",
+    include_doc_layer: bool = True,
+    include_cooccur: bool = True,
+):
+    """获取图谱数据。
+
+    include_doc_layer=false 时过滤文档结构层（文档/章节/片段锚点及结构边）与
+    「提及于」边（其端点是片段锚点）；「共现」边两端都是知识实体，由
+    include_cooccur 独立控制——默认放行，让无 Schema 关系的实体在默认视图
+    也能以淡虚线挂靠到共现邻居上，而不是显示为孤点。
+    """
     if status == "published":
         graph = load_published_graph(project_id)
     else:
         graph = load_draft_graph(project_id)
     if not include_doc_layer:
-        # 桥接边（提及于/共现）跟随结构层开关：默认视图只看知识层，避免共现兜底边淹没语义关系
         graph.nodes = [n for n in graph.nodes if not is_doc_layer_node(n.entity_type)]
         kept_ids = {n.id for n in graph.nodes}
         graph.edges = [
             e for e in graph.edges
-            if not is_doc_layer_edge(e.relation_type) and not is_bridge_edge(e.relation_type)
+            if not is_doc_layer_edge(e.relation_type)
+            and (e.relation_type != "提及于")
+            and (include_cooccur or e.relation_type != "共现")
             and e.source_id in kept_ids and e.target_id in kept_ids
         ]
+    elif not include_cooccur:
+        graph.edges = [e for e in graph.edges if e.relation_type != "共现"]
     return graph.model_dump()
+
+
+@router.post("/{project_id}/graph/structure-backfill")
+async def structure_backfill(project_id: str, request: Request):
+    """为旧版本抽取的图谱回填结构层与桥接层（无需重新抽取）。
+
+    升级前抽取的图谱没有 文档/章节 节点与 提及于/共现 边，知识实体因此
+    大量显示为孤点。本接口基于既有分片与草稿图，确定性地补建这些节点与边
+    （零 LLM 成本、幂等可重跑）。回填写入草稿图，重新发布后对已发布图生效。
+    """
+    from services.extraction.graph import _add_document_structure, _load_all_chunks
+    from services.graph_store import add_nodes_to_draft, add_edges_to_draft, clear_nx_cache
+
+    project_dir = get_project_dir(project_id)
+    all_chunks = _load_all_chunks(project_dir)
+    if not all_chunks:
+        raise HTTPException(status_code=400, detail="项目没有分片数据，无法回填（请先上传并解析文档）")
+
+    draft = load_draft_graph(project_id)
+    before_bridge = sum(1 for e in draft.edges if is_bridge_edge(e.relation_type))
+
+    # 旧图中「未归类片段」保底节点直接以 chunk_id 为节点 id 兼任锚点，须沿用避免双锚点
+    chunk_ids = {c["id"] for c in all_chunks}
+    orphan_chunk_ids = {n.id for n in draft.nodes if n.entity_type == "未归类片段" and n.id in chunk_ids}
+
+    await _add_document_structure(
+        project_id, all_chunks, orphan_chunk_ids,
+        add_nodes_to_draft, add_edges_to_draft, run_id="backfill",
+    )
+    clear_nx_cache(project_id)
+
+    after = load_draft_graph(project_id)
+    after_bridge = sum(1 for e in after.edges if is_bridge_edge(e.relation_type))
+    stats = {
+        "bridge_edges_before": before_bridge,
+        "bridge_edges_after": after_bridge,
+        "nodes_total": len(after.nodes),
+        "edges_total": len(after.edges),
+    }
+    try:
+        record_audit(project_id, actor=_actor(request), action="structure_backfill",
+                     target_kind="graph", target_id="draft", detail=stats)
+    except Exception:
+        pass
+    return {"message": "结构层与桥接层回填完成（写入草稿图，重新发布后对已发布图生效）", "stats": stats}
 
 
 @router.get("/{project_id}/graph/validate")

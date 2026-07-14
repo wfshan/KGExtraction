@@ -1,7 +1,7 @@
 /**
  * 图谱可视化页面 - Cytoscape.js 力导向图 + 侧边栏
  */
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
     Select, Tag, Descriptions, Empty, Space, Button, Checkbox, message, Badge,
@@ -20,7 +20,7 @@ import type { Core, EventObject } from 'cytoscape';
 import {
     listProjects, getGraph, getSchema, exportGraph, getChunksByIds, chatWithGraphStream,
     getChatHistory, clearChatHistory, resetChatSession, searchEntities, getProjectSubgraph,
-    buildCommunities, getCommunities
+    buildCommunities, getCommunities, structureBackfill
 } from '../api';
 import type {
     Project, GraphData, SchemaConfig, ChunkContent,
@@ -125,6 +125,9 @@ export default function GraphPage() {
     const [explorationMode, setExplorationMode] = useState(true); // 默认开启按需探索模式
     const [exploring, setExploring] = useState(false);
     const [showDocLayer, setShowDocLayer] = useState(false); // 文档结构层（片段锚点/「下一段」边）默认隐藏
+    // 共现兜底边默认显示（淡虚线）：让无 Schema 关系的实体挂靠共现邻居，而非显示为孤点
+    const [showCooccur, setShowCooccur] = useState(true);
+    const [backfilling, setBackfilling] = useState(false);
     // 图数据源：已发布 / 草稿。抽取完成但尚未发布时，已发布图为空——
     // 不切换数据源的话，探索搜索永远空结果且无解释
     const [graphSource, setGraphSource] = useState<'published' | 'draft'>('published');
@@ -272,14 +275,14 @@ export default function GraphPage() {
             cyRef.current = null;
         }
 
-        // 如果不是探索模式，则加载全量（按所选数据源；文档结构层按开关过滤）
+        // 如果不是探索模式，则加载全量（按所选数据源；文档结构层/共现边按开关过滤）
         if (!explorationMode) {
-            getGraph(selectedProject, graphSource, showDocLayer).then((res) => {
+            getGraph(selectedProject, graphSource, showDocLayer, showCooccur).then((res) => {
                 if (res.data.nodes?.length > 0) {
                     setGraph(res.data);
                 } else if (graphSource === 'published') {
                     // 已发布图为空（尚未发布）：透明回退到草稿并明确告知，而非静默偷换数据源
-                    getGraph(selectedProject, 'draft', showDocLayer).then((r) => {
+                    getGraph(selectedProject, 'draft', showDocLayer, showCooccur).then((r) => {
                         if (r.data.nodes?.length > 0) {
                             message.info('该项目尚未发布图谱，已切换为草稿图数据');
                             setGraphSource('draft');
@@ -292,7 +295,7 @@ export default function GraphPage() {
             });
         }
         getSchema(selectedProject).then((res) => setSchema(res.data)).catch(() => null);
-    }, [selectedProject, explorationMode, showDocLayer, graphSource]);
+    }, [selectedProject, explorationMode, showDocLayer, showCooccur, graphSource]);
 
     // Build Cytoscape graph
     useEffect(() => {
@@ -394,6 +397,18 @@ export default function GraphPage() {
                             'target-arrow-color': '#7B93FF',
                             width: 2.5,
                         },
+                    },
+                    {
+                        // 共现兜底边：淡虚线、无箭头、不显示标签——只提供"挂靠感"，不与语义关系争夺注意力
+                        selector: 'edge[label = "共现"]',
+                        style: {
+                            'line-style': 'dashed',
+                            'line-color': '#4A5568',
+                            width: 1,
+                            opacity: 0.45,
+                            'target-arrow-shape': 'none',
+                            'text-opacity': 0,
+                        } as any,
                     },
                     {
                         // 归纳知识（概念/规则）用菱形 + 虚线边框区分于表面实体，一眼看出"这是概括出来的抽象知识"
@@ -709,6 +724,38 @@ export default function GraphPage() {
         );
     };
 
+    // ===== 旧图检测与结构回填 =====
+    // 升级前抽取的图谱没有桥接层（提及于/共现），孤立实体无处挂靠。
+    // 检测：有知识节点、共现开关开着、却一条桥接/结构边都没有 → 判定为旧图，提示一键回填
+    const isLegacyGraph = useMemo(() => {
+        if (!graph || explorationMode || !showCooccur) return false;
+        if ((graph.nodes?.length || 0) === 0) return false;
+        return !graph.edges?.some((e: any) =>
+            e.relation_type === '共现' || e.relation_type === '提及于' || e.relation_type === '属于文档');
+    }, [graph, explorationMode, showCooccur]);
+
+    const handleBackfill = async () => {
+        if (!selectedProject) return;
+        setBackfilling(true);
+        try {
+            const res = await structureBackfill(selectedProject);
+            const s = res.data.stats;
+            message.success(`回填完成：桥接边 ${s.bridge_edges_before} → ${s.bridge_edges_after}`);
+            // 回填写入草稿图：若正看已发布图则切到草稿查看效果（重新发布后 published 才有）
+            if (graphSource === 'published') {
+                message.info('回填写入草稿图，已切换到草稿查看；重新发布后对已发布图生效');
+                setGraphSource('draft');
+            } else {
+                const r = await getGraph(selectedProject, 'draft', showDocLayer, showCooccur);
+                setGraph(r.data);
+            }
+        } catch (err: any) {
+            message.error(err.response?.data?.detail || '回填失败');
+        } finally {
+            setBackfilling(false);
+        }
+    };
+
     // ===== 问图命中高亮：命中子图点亮、其余降为背景 =====
     const applyRagHighlight = (info: RecallInfo) => {
         const cy = cyRef.current;
@@ -857,6 +904,16 @@ export default function GraphPage() {
                             文档结构层
                         </Checkbox>
                     )}
+                    {!explorationMode && (
+                        <Tooltip title="同片段共现、但无明确 Schema 关系的实体间的兜底关联（淡虚线）。关闭后这类实体会显示为孤点。">
+                            <Checkbox
+                                checked={showCooccur}
+                                onChange={e => setShowCooccur(e.target.checked)}
+                            >
+                                共现关联
+                            </Checkbox>
+                        </Tooltip>
+                    )}
 
                     <Button size="small" icon={<ExportOutlined />} onClick={handleExport} />
                     <Button
@@ -865,6 +922,25 @@ export default function GraphPage() {
                         onClick={() => setFullscreen(!fullscreen)}
                     />
                 </div>
+
+                {/* 旧图提示：缺少桥接层 → 一键回填 */}
+                {isLegacyGraph && (
+                    <div style={{
+                        position: 'absolute', top: 56, left: '50%', transform: 'translateX(-50%)',
+                        zIndex: 10, maxWidth: 560,
+                    }}>
+                        <Alert
+                            type="warning"
+                            showIcon
+                            message="该图谱由旧版本抽取，缺少语料挂靠边（提及于/共现），孤立节点无处连接"
+                            action={
+                                <Button size="small" type="primary" loading={backfilling} onClick={handleBackfill}>
+                                    一键回填（免重抽）
+                                </Button>
+                            }
+                        />
+                    </div>
+                )}
 
                 {/* Stats badge */}
                 <div style={{
